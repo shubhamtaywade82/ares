@@ -5,7 +5,7 @@
   "description": "ARES is a WebSocket-first, rule-based crypto futures scalping engine for Delta Exchange India, built with strict risk controls, deterministic execution, and production-grade safety systems.",
   "main": "index.js",
   "scripts": {
-    "dev": "tsx watch src/main.ts",
+    "dev": "tsx watch -r dotenv/config src/main.ts",
     "build": "tsc",
     "start": "node dist/main.js",
     "lint": "tsc --noEmit",
@@ -19,6 +19,7 @@
     "axios": "^1.13.4",
     "dayjs": "^1.11.19",
     "decimal.js": "^10.6.0",
+    "dotenv": "^16.6.1",
     "pino": "^10.3.0",
     "technicalindicators": "^3.1.0",
     "tulind": "^0.8.20",

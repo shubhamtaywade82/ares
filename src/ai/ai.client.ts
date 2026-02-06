@@ -4,10 +4,10 @@ export type AIProvider = "ollama" | "openai";
 
 export interface AIClientOptions {
   provider: AIProvider;
-  ollamaUrl?: string;
-  ollamaModel?: string;
-  openaiModel?: string;
-  openaiApiKey?: string;
+  ollamaUrl?: string | undefined;
+  ollamaModel?: string | undefined;
+  openaiModel?: string | undefined;
+  openaiApiKey?: string | undefined;
 }
 
 export class AIClient {

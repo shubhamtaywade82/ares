@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { DeltaRestClient } from "./delta/rest.client.js";
 import { DeltaWsClient } from "./delta/ws.client.js";
 import { MarketCache } from "./market/market.cache.js";
