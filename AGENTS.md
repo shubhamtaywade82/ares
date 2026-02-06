@@ -39,6 +39,9 @@ Use module-scoped tags in square brackets for consistent filtering:
 Example:
 `[ARES.RISK] Trade blocked — MAX_DAILY_LOSS`
 
+## AI Veto Layer
+AI is a veto-only layer that sits after strategy and risk. It must never generate trades, alter size, or touch execution. If AI fails or returns invalid output, the trade is blocked. Relevant code lives under `src/ai/`.
+
 ## Security & Configuration Tips
 Environment variables are required for Delta Exchange access. Use `.env.example` as a template and avoid committing secrets. Key variables include:
 - `DELTA_API_KEY`, `DELTA_API_SECRET`

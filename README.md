@@ -27,6 +27,21 @@ Use standardized tags for logs, metrics, and alerts:
 Example:
 `[ARES.RISK] Trade blocked — MAX_DAILY_LOSS`
 
+## AI Veto Layer (Optional)
+AI is a post-strategy veto only. It must never generate trades, adjust risk, or touch execution.
+
+Flow:
+Market → Indicators → Strategy → Risk → AI Veto → Execution
+
+Files:
+- `src/ai/ai.client.ts`
+- `src/ai/prompt.builder.ts`
+- `src/ai/ai.veto.ts`
+- `src/ai/ai.types.ts`
+
+Config:
+- `OPENAI_API_KEY` (optional, only required for OpenAI provider)
+
 ## Development
 - `npm run dev`: Run in watch mode
 - `npm run lint`: Type-check only (`tsc --noEmit`)
