@@ -50,6 +50,12 @@ Config:
 - `npm run build`: Compile to `dist/`
 - `npm run start`: Run compiled output
 
+## Delta Endpoints
+Defaults target Delta Exchange India (production).
+Testnet values:
+- `DELTA_BASE_URL=https://cdn-ind.testnet.deltaex.org`
+- `DELTA_WS_URL=wss://socket-ind.testnet.deltaex.org`
+
 ## Identity Variants
 Primary: `ARES`
 Optional variants: `ARES-X` (live), `ARES-SIM` (paper/backtest), `ARES-CORE` (engine-only)

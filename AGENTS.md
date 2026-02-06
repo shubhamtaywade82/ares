@@ -46,5 +46,5 @@ Default provider is `ollama` for local runs; set `AI_PROVIDER=openai` with `OPEN
 ## Security & Configuration Tips
 Environment variables are required for Delta Exchange access. Use `.env.example` as a template and avoid committing secrets. Key variables include:
 - `DELTA_API_KEY`, `DELTA_API_SECRET`
-- `DELTA_BASE_URL`, `DELTA_WS_URL`
+- `DELTA_BASE_URL`, `DELTA_WS_URL` (defaults target India production; testnet available)
 - `TRADING_MODE`, `LOG_LEVEL`
