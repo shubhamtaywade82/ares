@@ -40,7 +40,9 @@ Files:
 - `src/ai/ai.types.ts`
 
 Config:
-- `OPENAI_API_KEY` (optional, only required for OpenAI provider)
+- `AI_PROVIDER` (`ollama` or `openai`, default `ollama`)
+- `OLLAMA_URL`, `OLLAMA_MODEL`
+- `OPENAI_API_KEY`, `OPENAI_MODEL`
 
 ## Development
 - `npm run dev`: Run in watch mode

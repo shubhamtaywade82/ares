@@ -41,6 +41,7 @@ Example:
 
 ## AI Veto Layer
 AI is a veto-only layer that sits after strategy and risk. It must never generate trades, alter size, or touch execution. If AI fails or returns invalid output, the trade is blocked. Relevant code lives under `src/ai/`.
+Default provider is `ollama` for local runs; set `AI_PROVIDER=openai` with `OPENAI_API_KEY` for live usage.
 
 ## Security & Configuration Tips
 Environment variables are required for Delta Exchange access. Use `.env.example` as a template and avoid committing secrets. Key variables include:

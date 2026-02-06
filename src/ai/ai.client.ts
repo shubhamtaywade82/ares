@@ -56,3 +56,15 @@ export class AIClient {
     return res.data.choices[0].message.content;
   }
 }
+
+export function createAIClientFromEnv(): AIClient {
+  const provider = (process.env.AI_PROVIDER ?? "ollama") as AIProvider;
+
+  return new AIClient({
+    provider,
+    ollamaUrl: process.env.OLLAMA_URL,
+    ollamaModel: process.env.OLLAMA_MODEL,
+    openaiModel: process.env.OPENAI_MODEL,
+    openaiApiKey: process.env.OPENAI_API_KEY,
+  });
+}
