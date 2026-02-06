@@ -1,0 +1,18 @@
+{
+  "name": "ares",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ARES — Automated Risk-controlled Execution Scalper",
+  "main": "index.js",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module"
+}
