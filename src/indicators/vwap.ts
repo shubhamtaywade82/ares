@@ -17,7 +17,8 @@ export async function computeVWAP(
       [],
       (err, res) => {
         if (err) return reject(err);
-        resolve(res[0].at(-1));
+        const series = res[0];
+        resolve(series ? series.at(-1) : undefined);
       }
     );
   });

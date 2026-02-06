@@ -29,14 +29,14 @@ export class IndicatorCache {
       atr14 !== undefined &&
       vwap !== undefined;
 
-    this.cache.set(tf, {
-      ema20,
-      ema200,
-      rsi14,
-      atr14,
-      vwap,
-      ready,
-    });
+    const snapshot: IndicatorSnapshot = { ready };
+    if (ema20 !== undefined) snapshot.ema20 = ema20;
+    if (ema200 !== undefined) snapshot.ema200 = ema200;
+    if (rsi14 !== undefined) snapshot.rsi14 = rsi14;
+    if (atr14 !== undefined) snapshot.atr14 = atr14;
+    if (vwap !== undefined) snapshot.vwap = vwap;
+
+    this.cache.set(tf, snapshot);
   }
 
   snapshot(tf: Timeframe): IndicatorSnapshot {
