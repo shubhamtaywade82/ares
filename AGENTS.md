@@ -31,6 +31,14 @@ Pull requests should include:
 - any configuration changes (env vars, flags)
 - validation notes (commands run and results)
 
+## Logging Conventions
+Use module-scoped tags in square brackets for consistent filtering:
+- `ARES.MARKET`, `ARES.INDICATORS`, `ARES.STRATEGY`, `ARES.RISK`
+- `ARES.EXECUTION`, `ARES.KILL`, `ARES.PAPER`, `ARES.BACKTEST`
+
+Example:
+`[ARES.RISK] Trade blocked — MAX_DAILY_LOSS`
+
 ## Security & Configuration Tips
 Environment variables are required for Delta Exchange access. Use `.env.example` as a template and avoid committing secrets. Key variables include:
 - `DELTA_API_KEY`, `DELTA_API_SECRET`
