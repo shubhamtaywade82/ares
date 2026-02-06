@@ -3,6 +3,8 @@ import { DeltaWsClient } from "./delta/ws.client.js";
 import { MarketCache } from "./market/market.cache.js";
 import { bootstrapMarket } from "./market/bootstrap.js";
 import { SYMBOLS } from "./market/symbol.registry.js";
+import { KillSwitch } from "./risk/kill.switch.js";
+import { KillReason } from "./risk/kill.reasons.js";
 
 type TickerMessage = {
   type?: string;
@@ -13,6 +15,10 @@ type TickerMessage = {
 
 const rest = new DeltaRestClient();
 const market = new MarketCache();
+
+process.on("SIGINT", () => {
+  KillSwitch.trigger(KillReason.MANUAL);
+});
 
 const ws = new DeltaWsClient(
   (msg: TickerMessage) => {

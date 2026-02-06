@@ -2,6 +2,8 @@ import { v4 as uuid } from "uuid";
 import { DeltaRestClient } from "../delta/rest.client.js";
 import { ExecutionRequest } from "./types.js";
 import { OrderStore } from "../state/order.store.js";
+import { KillSwitch } from "../risk/kill.switch.js";
+import { KillReason } from "../risk/kill.reasons.js";
 
 export class OrderManager {
   constructor(
@@ -19,38 +21,83 @@ export class OrderManager {
       return set;
     }
 
-    const entry = await this.rest.placeOrder({
-      product_symbol: req.symbol,
-      side: req.side === "LONG" ? "buy" : "sell",
-      type: "limit",
-      price: req.entryPrice,
-      size: req.qty,
-      client_order_id: clientOrderId,
-    });
+    let entry;
+    try {
+      entry = await this.rest.placeOrder({
+        product_symbol: req.symbol,
+        side: req.side === "LONG" ? "buy" : "sell",
+        type: "limit",
+        price: req.entryPrice,
+        size: req.qty,
+        client_order_id: clientOrderId,
+      });
+    } catch (err) {
+      KillSwitch.trigger(KillReason.EXECUTION_FAILURE, {
+        stage: "ENTRY",
+        error: String(err),
+      });
+    }
+
+    if (!entry?.result?.id || entry?.result?.status === "rejected") {
+      KillSwitch.trigger(KillReason.ORDER_REJECTED, {
+        stage: "ENTRY",
+        response: entry,
+      });
+    }
 
     set.entryOrderId = entry.result.id;
 
-    const stop = await this.rest.placeOrder({
-      product_symbol: req.symbol,
-      side: req.side === "LONG" ? "sell" : "buy",
-      type: "stop_market",
-      stop_price: req.stopPrice,
-      size: req.qty,
-      reduce_only: true,
-      client_order_id: `${clientOrderId}-SL`,
-    });
+    let stop;
+    try {
+      stop = await this.rest.placeOrder({
+        product_symbol: req.symbol,
+        side: req.side === "LONG" ? "sell" : "buy",
+        type: "stop_market",
+        stop_price: req.stopPrice,
+        size: req.qty,
+        reduce_only: true,
+        client_order_id: `${clientOrderId}-SL`,
+      });
+    } catch (err) {
+      KillSwitch.trigger(KillReason.EXECUTION_FAILURE, {
+        stage: "STOP",
+        error: String(err),
+      });
+    }
+
+    if (!stop?.result?.id || stop?.result?.status === "rejected") {
+      KillSwitch.trigger(KillReason.ORDER_REJECTED, {
+        stage: "STOP",
+        response: stop,
+      });
+    }
 
     set.stopOrderId = stop.result.id;
 
-    const tp = await this.rest.placeOrder({
-      product_symbol: req.symbol,
-      side: req.side === "LONG" ? "sell" : "buy",
-      type: "limit",
-      price: req.targetPrice,
-      size: req.qty,
-      reduce_only: true,
-      client_order_id: `${clientOrderId}-TP`,
-    });
+    let tp;
+    try {
+      tp = await this.rest.placeOrder({
+        product_symbol: req.symbol,
+        side: req.side === "LONG" ? "sell" : "buy",
+        type: "limit",
+        price: req.targetPrice,
+        size: req.qty,
+        reduce_only: true,
+        client_order_id: `${clientOrderId}-TP`,
+      });
+    } catch (err) {
+      KillSwitch.trigger(KillReason.EXECUTION_FAILURE, {
+        stage: "TAKE_PROFIT",
+        error: String(err),
+      });
+    }
+
+    if (!tp?.result?.id || tp?.result?.status === "rejected") {
+      KillSwitch.trigger(KillReason.ORDER_REJECTED, {
+        stage: "TAKE_PROFIT",
+        response: tp,
+      });
+    }
 
     set.targetOrderId = tp.result.id;
 

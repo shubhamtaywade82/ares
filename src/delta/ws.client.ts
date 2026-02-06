@@ -1,6 +1,8 @@
 import WebSocket from "ws";
 import { env } from "../config/env.js";
 import { DELTA_CONFIG } from "../config/delta.js";
+import { KillSwitch } from "../risk/kill.switch.js";
+import { KillReason } from "../risk/kill.reasons.js";
 
 type WsHandler = (msg: any) => void;
 
@@ -44,6 +46,7 @@ export class DeltaWsClient {
   private shutdown(reason: string) {
     console.error("WS FATAL:", reason);
     clearInterval(this.heartbeat);
-    this.onFatal(); // kill switch hook
+    KillSwitch.trigger(KillReason.WS_DISCONNECT, { reason });
+    this.onFatal(); // legacy hook (unreachable after KillSwitch)
   }
 }
