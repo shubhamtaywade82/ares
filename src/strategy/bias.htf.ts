@@ -29,17 +29,11 @@ export function computeHTFBias(
     return "NONE";
   }
 
-  const hh = last.high > prev.high && prev.high > prev2.high;
-  const hl = last.low > prev.low && prev.low > prev2.low;
-
-  const lh = last.high < prev.high && prev.high < prev2.high;
-  const ll = last.low < prev.low && prev.low < prev2.low;
-
-  if (last.close > ind.ema200 && ind.rsi14 > 50 && hh && hl) {
+  if (last.close > ind.ema200 && ind.rsi14 > 55) {
     return "LONG";
   }
 
-  if (last.close < ind.ema200 && ind.rsi14 < 50 && lh && ll) {
+  if (last.close < ind.ema200 && ind.rsi14 < 45) {
     return "SHORT";
   }
 
