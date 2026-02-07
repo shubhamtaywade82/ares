@@ -8,10 +8,10 @@ import { PnlTracker } from "../state/pnl.tracker.js";
 export type PaperTradeConfig = {
   productSymbol: string;
   productId?: number;
+  capital: number;
   leverage: number;
   profitTargetPercent: number;
   stopLossPercent: number;
-  riskPerTrade: number;
   side: "buy" | "sell";
   useMarketOrder: boolean;
   logEveryMs: number;
@@ -57,6 +57,7 @@ export class PaperTrader {
   private lastLogAt = 0;
   private entryOrder?: PaperOrder;
   private done = false;
+  private contractValue = 1;
 
   constructor(private config: PaperTradeConfig) {
     this.rest = new DeltaRestClient();
@@ -91,11 +92,14 @@ export class PaperTrader {
     );
 
     const contractValue = Number(product.contract_value ?? 1);
-    const lotSize = this.calculateLotSize(
+    this.contractValue =
+      Number.isFinite(contractValue) && contractValue > 0 ? contractValue : 1;
+    this.paper.setContractValue(product.id, product.symbol, this.contractValue);
+    const lotSize = this.calculateMaxContracts(
+      this.config.capital,
+      this.config.leverage,
       entryPrice,
-      stopLoss,
-      this.config.riskPerTrade,
-      Number.isFinite(contractValue) && contractValue > 0 ? contractValue : 1
+      this.contractValue
     );
 
     console.log("\n[ARES.PAPER] Trade Plan:");
@@ -107,7 +111,8 @@ export class PaperTrader {
     console.log(
       `  Take Profit: ₹${takeProfit.toFixed(2)} (+${this.config.profitTargetPercent}%)`
     );
-    console.log(`  Risk: ₹${this.config.riskPerTrade}`);
+    console.log(`  Capital: ₹${this.config.capital}`);
+    console.log(`  Leverage: ${this.config.leverage}x`);
     console.log(`  Lot Size: ${lotSize} contracts`);
 
     this.setLeverage(product.id, product.symbol, this.config.leverage);
@@ -181,22 +186,25 @@ export class PaperTrader {
     return Number(parsed);
   }
 
-  private calculateLotSize(
+  private calculateMaxContracts(
+    capital: number,
+    leverage: number,
     entryPrice: number,
-    stopLossPrice: number,
-    riskAmount: number,
     contractValue: number
   ): number {
-    console.log("\n[ARES.PAPER] STEP 2: Calculating lot size...");
+    console.log("\n[ARES.PAPER] STEP 2: Calculating max contracts...");
 
-    const riskPerContract = Math.abs(entryPrice - stopLossPrice) * contractValue;
-    const calculatedSize = Math.floor(riskAmount / riskPerContract);
+    const buyingPower = capital * leverage;
+    const valuePerContract = entryPrice * contractValue;
+    const calculatedSize = Math.floor(buyingPower / valuePerContract);
     const lotSize = Math.max(1, calculatedSize);
 
+    console.log(`  Capital: ₹${capital}`);
+    console.log(`  Leverage: ${leverage}x`);
     console.log(`  Entry Price: ₹${entryPrice}`);
-    console.log(`  Stop Loss: ₹${stopLossPrice}`);
-    console.log(`  Risk Amount: ₹${riskAmount}`);
-    console.log(`  Risk per Contract: ₹${riskPerContract.toFixed(2)}`);
+    console.log(`  Contract Size: ${contractValue}`);
+    console.log(`  Value per Contract: ₹${valuePerContract.toFixed(2)}`);
+    console.log(`  Buying Power: ₹${buyingPower.toFixed(2)}`);
     console.log(`✓ Lot Size: ${lotSize} contracts`);
 
     return lotSize;
@@ -319,10 +327,12 @@ export class PaperTrader {
 
     const unrealizedPnl =
       side === "buy"
-        ? (price - entryPrice) * size
-        : (entryPrice - price) * size;
+        ? (price - entryPrice) * size * this.contractValue
+        : (entryPrice - price) * size * this.contractValue;
 
-    const pnlPercent = (unrealizedPnl / (entryPrice * size)) * 100;
+    const positionValue = entryPrice * size * this.contractValue;
+    const margin = positionValue / this.config.leverage;
+    const pnlPercent = margin > 0 ? (unrealizedPnl / margin) * 100 : 0;
 
     const localPosition: LocalPosition = {
       productId,

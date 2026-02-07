@@ -64,6 +64,7 @@ export class PaperExecutor {
   private onOrderUpdate?: OrderUpdateHandler;
   private lastPrice: number | undefined;
   private leverages = new Map<string, number>();
+  private contractValues = new Map<string, number>();
 
   constructor(
     private positions: PositionStore,
@@ -277,6 +278,18 @@ export class PaperExecutor {
     };
   }
 
+  setContractValue(
+    productId: number | undefined,
+    productSymbol: string | undefined,
+    contractValue: number
+  ) {
+    const key = this.leverageKey(productId, productSymbol);
+    if (Number.isFinite(contractValue) && contractValue > 0) {
+      this.contractValues.set(key, contractValue);
+    }
+    return { contractValue, productId, productSymbol };
+  }
+
   getOpenPositions(filters?: { productIds?: number[]; productSymbols?: string[] }) {
     const productIds = filters?.productIds;
     const productSymbols = filters?.productSymbols?.map((s) => s.toUpperCase());
@@ -305,7 +318,8 @@ export class PaperExecutor {
     const pos = this.positions.getByProduct(productId, productSymbol);
     if (!pos) return;
     const fillPrice = price ?? this.lastPrice ?? pos.entryPrice;
-    const fee = fillPrice * pos.qty * PAPER_CONFIG.takerFeePct;
+    const contractValue = this.resolveContractValue(productId, productSymbol);
+    const fee = fillPrice * pos.qty * contractValue * PAPER_CONFIG.takerFeePct;
     const side = pos.side === "LONG" ? "sell" : "buy";
     this.applyFill(
       {
@@ -390,7 +404,8 @@ export class PaperExecutor {
       ? PAPER_CONFIG.makerFeePct
       : PAPER_CONFIG.takerFeePct;
 
-    const fee = fillPrice * fillQty * feePct;
+    const contractValue = this.resolveContractValue(order.productId, order.productSymbol);
+    const fee = fillPrice * fillQty * contractValue * feePct;
 
     this.applyFill(
       {
@@ -434,10 +449,11 @@ export class PaperExecutor {
     }
 
     const pos = existing;
+    const contractValue = this.resolveContractValue(fill.productId, fill.productSymbol);
     const pnl =
       pos.side === "LONG"
-        ? (fill.price - pos.entryPrice) * fill.qty
-        : (pos.entryPrice - fill.price) * fill.qty;
+        ? (fill.price - pos.entryPrice) * fill.qty * contractValue
+        : (pos.entryPrice - fill.price) * fill.qty * contractValue;
 
     this.pnl.record(pnl - fee);
     this.positions.close(fill.productId, fill.productSymbol);
@@ -518,5 +534,10 @@ export class PaperExecutor {
     if (productId != null) return `id:${productId}`;
     if (productSymbol) return `sym:${productSymbol.toUpperCase()}`;
     return "default";
+  }
+
+  private resolveContractValue(productId?: number, productSymbol?: string) {
+    const key = this.leverageKey(productId, productSymbol);
+    return this.contractValues.get(key) ?? 1;
   }
 }
