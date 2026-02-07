@@ -6,13 +6,25 @@ export async function bootstrapMarket(
   cache: MarketCache,
   symbol: string
 ) {
-  const [m1, m5, m15] = await Promise.all([
-    rest.getCandles(symbol, "1m"),
-    rest.getCandles(symbol, "5m"),
-    rest.getCandles(symbol, "15m"),
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - 60 * 60 * 24 * 2;
+  const results = await Promise.allSettled([
+    rest.getCandles(symbol, "1m", start, end),
+    rest.getCandles(symbol, "5m", start, end),
+    rest.getCandles(symbol, "15m", start, end),
   ]);
 
-  cache.bootstrap("1m", m1.result);
-  cache.bootstrap("5m", m5.result);
-  cache.bootstrap("15m", m15.result);
+  const tfs: Array<"1m" | "5m" | "15m"> = ["1m", "5m", "15m"];
+  results.forEach((result, index) => {
+    const tf = tfs[index];
+    if (result.status === "fulfilled") {
+      cache.bootstrap(tf, result.value.result);
+      return;
+    }
+
+    const reason =
+      result.reason instanceof Error ? result.reason.message : String(result.reason);
+    console.error(`[ARES.MARKET] Bootstrap failed for ${tf}: ${reason}`);
+    cache.bootstrap(tf, []);
+  });
 }

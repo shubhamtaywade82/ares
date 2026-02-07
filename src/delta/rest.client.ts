@@ -149,10 +149,20 @@ export class DeltaRestClient {
     );
   }
 
-  getCandles(symbol: string, resolution: string, limit = 200) {
+  getCandles(
+    symbol: string,
+    resolution: string,
+    start: number,
+    end: number,
+    limit = 200
+  ) {
+    const normalizedResolution =
+      resolution.endsWith("m") && Number.isFinite(Number(resolution.slice(0, -1)))
+        ? resolution.slice(0, -1)
+        : resolution;
     return this.request(
       "GET",
-      `/v2/history/candles?symbol=${symbol}&resolution=${resolution}&limit=${limit}`,
+      `/v2/history/candles?symbol=${symbol}&resolution=${normalizedResolution}&start=${start}&end=${end}&limit=${limit}`,
       undefined,
       z.object({ result: z.array(z.any()) }),
       false

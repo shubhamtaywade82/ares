@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+const optionalString = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().min(1).optional()
+);
+
+const optionalNumber = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.coerce.number().int().positive().optional()
+);
+
 const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]),
   DELTA_API_KEY: z.string().min(10),
@@ -12,6 +22,8 @@ const EnvSchema = z.object({
     .string()
     .url()
     .default("wss://socket.india.delta.exchange"),
+  DELTA_PRODUCT_SYMBOL: optionalString,
+  DELTA_PRODUCT_ID: optionalNumber,
   TRADING_MODE: z.enum(["paper", "live"]),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
