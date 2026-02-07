@@ -18,6 +18,10 @@ import { aiVeto } from "./ai/ai.veto.js";
 import { OrderStore } from "./state/order.store.js";
 import { OrderManager } from "./execution/order.manager.js";
 import { RiskContext } from "./risk/types.js";
+import { PaperExecutor } from "./execution/paper.executor.js";
+import { PositionStore } from "./state/position.store.js";
+import { PnlTracker } from "./state/pnl.tracker.js";
+import { OcoManager } from "./execution/oco.manager.js";
 
 type TickerMessage = {
   type?: string;
@@ -31,7 +35,11 @@ const market = new MarketCache();
 const indicators = new IndicatorCache(market);
 const aiClient = createAIClientFromEnv();
 const orderStore = new OrderStore();
-const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE);
+const positions = new PositionStore();
+const pnl = new PnlTracker();
+const paper = env.TRADING_MODE === "paper" ? new PaperExecutor(positions, pnl) : undefined;
+const ocoManager = new OcoManager(orderStore, rest, env.TRADING_MODE, paper);
+const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE, paper);
 
 let bootstrapped = false;
 let lastClosed1m = 0;
@@ -120,6 +128,9 @@ async function bootstrap() {
 
       const tsMs = parsedTs > 1e12 ? parsedTs / 1000 : parsedTs;
       market.ingestTick(price, volume, tsMs);
+      if (paper) {
+        paper.onTick(price);
+      }
       if (!bootstrapped) return;
       const closed = market.lastClosed("1m");
       if (!closed || closed.timestamp === lastClosed1m) return;
@@ -135,6 +146,17 @@ async function bootstrap() {
       ws?.subscribe("v2/ticker", [symbol]);
     }
   );
+
+  if (paper) {
+    const handleUpdate = (orderId: string, status: string) => {
+      orderManager.onPaperOrderUpdate(orderId, status);
+      void ocoManager.onOrderUpdate(orderId, status);
+      if (!positions.isOpen) {
+        console.info(`[ARES.PAPER] Realized PnL=${pnl.value.toFixed(2)}`);
+      }
+    };
+    paper.setOnOrderUpdate(handleUpdate);
+  }
 
   ws.connect();
 }

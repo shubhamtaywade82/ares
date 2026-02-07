@@ -8,13 +8,20 @@ type OrderUpdateHandler = (orderId: string, status: string) => void;
 
 export class PaperExecutor {
   private orders = new Map<string, PaperOrder>();
+  private onOrderUpdate?: OrderUpdateHandler;
 
   constructor(
     private positions: PositionStore,
     private pnl: PnlTracker,
-    private onOrderUpdate?: OrderUpdateHandler,
+    onOrderUpdate?: OrderUpdateHandler,
     private rng: () => number = Math.random
-  ) {}
+  ) {
+    this.onOrderUpdate = onOrderUpdate;
+  }
+
+  setOnOrderUpdate(handler?: OrderUpdateHandler) {
+    this.onOrderUpdate = handler;
+  }
 
   placeLimit(side: "buy" | "sell", price: number, qty: number): PaperOrder {
     const order: PaperOrder = {
@@ -48,6 +55,13 @@ export class PaperExecutor {
 
     this.orders.set(order.id, order);
     return order;
+  }
+
+  cancel(orderId: string) {
+    const order = this.orders.get(orderId);
+    if (!order) return;
+    order.status = "cancelled";
+    this.orders.delete(orderId);
   }
 
   onTick(price: number) {
