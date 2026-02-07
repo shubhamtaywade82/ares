@@ -26,6 +26,7 @@ const EnvSchema = z.object({
   DELTA_PRODUCT_ID: optionalNumber,
   TRADING_MODE: z.enum(["paper", "live"]),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  FORCE_HTF_BIAS: z.enum(["LONG", "SHORT", "NONE"]).optional(),
 });
 
 export const env = EnvSchema.parse(process.env);

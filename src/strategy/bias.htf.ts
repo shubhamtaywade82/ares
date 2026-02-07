@@ -1,11 +1,17 @@
 import { MarketCache } from "../market/market.cache.js";
 import { IndicatorCache } from "../indicators/indicator.cache.js";
 import { Bias } from "./types.js";
+import { env } from "../config/env.js";
 
 export function computeHTFBias(
   market: MarketCache,
   indicators: IndicatorCache
 ): Bias {
+  if (env.FORCE_HTF_BIAS) {
+    console.info(`[ARES.STRATEGY] Forced HTF bias=${env.FORCE_HTF_BIAS}`);
+    return env.FORCE_HTF_BIAS;
+  }
+
   const candles = market.candles("15m");
   const ind = indicators.snapshot("15m");
 

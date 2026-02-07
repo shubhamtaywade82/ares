@@ -29,6 +29,10 @@ export async function runStrategy(
   }
 
   const scored = scoreSetup(setup, indicators.snapshot("15m"));
+  if (!scored) {
+    console.info("[ARES.STRATEGY] Setup score below threshold");
+    return null;
+  }
   console.info(`[ARES.STRATEGY] Setup scored=${scored.score}`);
 
   return scored;
