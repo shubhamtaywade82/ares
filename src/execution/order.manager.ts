@@ -86,7 +86,7 @@ export class OrderManager {
       });
     }
 
-    set.entryOrderId = entry.result.id;
+    set.entryOrderId = String(entry.result.id);
 
     let stop;
     try {
@@ -116,7 +116,7 @@ export class OrderManager {
       });
     }
 
-    set.stopOrderId = stop.result.id;
+    set.stopOrderId = String(stop.result.id);
 
     let tp;
     try {
@@ -146,7 +146,7 @@ export class OrderManager {
       });
     }
 
-    set.targetOrderId = tp.result.id;
+    set.targetOrderId = String(tp.result.id);
 
     return set;
   }

@@ -5,6 +5,7 @@ export interface RiskContext {
 }
 
 export interface TradeRiskInput {
+  symbol: string;
   entryPrice: number;
   stopPrice: number;
   side: "LONG" | "SHORT";

@@ -46,12 +46,14 @@ let lastClosed1m = 0;
 let running = false;
 let cachedBalance: number | undefined;
 let cachedProduct: any;
+let wsSymbol: string | undefined;
 
 process.on("SIGINT", () => {
   KillSwitch.trigger(KillReason.MANUAL);
 });
 
 let ws: DeltaWsClient | undefined;
+let livePosition: any | undefined;
 
 async function resolveProductIdBySymbol(rest: DeltaRestClient, symbol: string) {
   try {
@@ -119,6 +121,8 @@ async function bootstrap() {
     symbol = defaultSymbol;
   }
 
+  wsSymbol = symbol;
+
   if (!productId) {
     productId = await resolveProductIdBySymbol(rest, symbol);
   }
@@ -141,6 +145,14 @@ async function bootstrap() {
     (msg: TickerMessage) => {
       const msgType = msg.type;
       const isTicker = msgType === "ticker" || msgType === "v2/ticker";
+      if (msgType === "orders") {
+        handleOrderUpdate(msg);
+        return;
+      }
+      if (msgType === "positions") {
+        handlePositionUpdate(msg);
+        return;
+      }
       if (!isTicker) return;
 
       const rawPrice =
@@ -178,6 +190,18 @@ async function bootstrap() {
     () => {
       console.info("[ARES.MARKET] WS connected; subscribing to ticker");
       ws?.subscribe("v2/ticker", [symbol]);
+    },
+    {
+      auth: env.TRADING_MODE === "live",
+      onAuth: (success) => {
+        if (!success) {
+          console.warn("[ARES.MARKET] WS auth failed; private channels disabled");
+          return;
+        }
+        console.info("[ARES.MARKET] WS auth OK; subscribing to orders/positions");
+        ws?.subscribe("orders", ["all"]);
+        ws?.subscribe("positions", ["all"]);
+      },
     }
   );
 
@@ -199,6 +223,64 @@ bootstrap().catch((e) => {
   console.error("BOOT FAILURE", e);
   process.exit(1);
 });
+
+function matchWsSymbol(symbol?: string) {
+  if (!symbol || !wsSymbol) return true;
+  return symbol.toUpperCase() === wsSymbol.toUpperCase();
+}
+
+function normalizeOrderUpdates(msg: any): any[] {
+  if (Array.isArray(msg?.result)) return msg.result;
+  if (Array.isArray(msg?.orders)) return msg.orders;
+  return [msg];
+}
+
+function resolveOrderStatus(order: any): string | undefined {
+  const state = order?.state ?? order?.order_state;
+  if (typeof state === "string") {
+    if (state === "filled") return "closed";
+    return state;
+  }
+  if (order?.action === "delete") return "closed";
+  if (order?.reason === "fill" && order?.unfilled_size === 0) return "closed";
+  if (order?.unfilled_size === 0 && order?.filled_size != null) return "closed";
+  return undefined;
+}
+
+function handleOrderUpdate(msg: any) {
+  const updates = normalizeOrderUpdates(msg);
+  for (const order of updates) {
+    const symbol = order?.product_symbol ?? order?.symbol;
+    if (!matchWsSymbol(symbol)) continue;
+    const orderId = order?.id ?? order?.order_id;
+    if (orderId == null) continue;
+    const status = resolveOrderStatus(order);
+    if (status === "closed") {
+      void ocoManager.onOrderUpdate(String(orderId), status);
+    }
+  }
+}
+
+function normalizePositions(msg: any): any[] {
+  if (Array.isArray(msg?.result)) return msg.result;
+  if (Array.isArray(msg?.positions)) return msg.positions;
+  return [msg];
+}
+
+function handlePositionUpdate(msg: any) {
+  const updates = normalizePositions(msg);
+  for (const pos of updates) {
+    const symbol = pos?.product_symbol ?? pos?.symbol;
+    if (!matchWsSymbol(symbol)) continue;
+    livePosition = pos;
+    const size = Number(pos?.size ?? 0);
+    if (!Number.isFinite(size)) continue;
+    const entry = pos?.entry_price ?? pos?.avg_price ?? pos?.mark_price;
+    console.info(
+      `[ARES.MARKET] Position update ${symbol} size=${size} entry=${entry ?? "?"}`
+    );
+  }
+}
 
 function resolveMinLotSize(product: any): number | undefined {
   const raw =
@@ -297,6 +379,7 @@ async function onNew1mClose() {
     }
 
     const risk = evaluateRisk(ctx, {
+      symbol: env.DELTA_PRODUCT_SYMBOL ?? SYMBOLS.BTC_USDT.symbol,
       entryPrice,
       stopPrice,
       side: signal.side,

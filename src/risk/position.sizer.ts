@@ -1,4 +1,4 @@
-import { RISK_CONFIG } from "../config/risk.js";
+import { RISK_CONFIG, resolveMaxLeverage } from "../config/risk.js";
 import { TradeRiskInput, PositionSizeResult } from "./types.js";
 
 export function calculatePositionSize(
@@ -7,18 +7,22 @@ export function calculatePositionSize(
 ): PositionSizeResult | null {
   const riskAmount = balance * RISK_CONFIG.riskPerTradePct;
   const stopDistance = Math.abs(input.entryPrice - input.stopPrice);
+  const maxLeverage = resolveMaxLeverage(input.symbol);
 
   if (stopDistance <= 0) return null;
 
   const rawQty = riskAmount / stopDistance;
+  const maxNotional = balance * maxLeverage;
+  const maxQty = maxNotional / input.entryPrice;
+  const sizedQty = Math.min(rawQty, maxQty);
   console.info(
-    `[ARES.RISK] PositionSize balance=${balance} riskAmount=${riskAmount} stopDistance=${stopDistance} rawQty=${rawQty} minLotSize=${input.minLotSize}`
+    `[ARES.RISK] PositionSize balance=${balance} riskAmount=${riskAmount} stopDistance=${stopDistance} rawQty=${rawQty} maxLeverage=${maxLeverage} maxQty=${maxQty} minLotSize=${input.minLotSize}`
   );
 
-  if (rawQty < input.minLotSize) return null;
+  if (sizedQty < input.minLotSize) return null;
 
   return {
-    qty: Math.floor(rawQty / input.minLotSize) * input.minLotSize,
+    qty: Math.floor(sizedQty / input.minLotSize) * input.minLotSize,
     riskAmount,
     stopDistance,
   };

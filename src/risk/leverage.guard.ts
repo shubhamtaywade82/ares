@@ -1,12 +1,11 @@
-import { RISK_CONFIG } from "../config/risk.js";
-
 export function checkLeverage(
   notional: number,
-  balance: number
+  balance: number,
+  maxLeverage: number
 ): string | null {
   const leverage = notional / balance;
 
-  if (leverage > RISK_CONFIG.maxLeverage) {
+  if (leverage > maxLeverage) {
     return "LEVERAGE_TOO_HIGH";
   }
 

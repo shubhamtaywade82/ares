@@ -2,6 +2,7 @@ import { calculatePositionSize } from "./position.sizer.js";
 import { checkExposure } from "./exposure.guard.js";
 import { checkLeverage } from "./leverage.guard.js";
 import { RiskContext, TradeRiskInput } from "./types.js";
+import { resolveMaxLeverage } from "../config/risk.js";
 
 export function evaluateRisk(
   ctx: RiskContext,
@@ -20,7 +21,8 @@ export function evaluateRisk(
   }
 
   const notional = size.qty * trade.entryPrice;
-  const leverageFail = checkLeverage(notional, ctx.balance);
+  const maxLeverage = resolveMaxLeverage(trade.symbol);
+  const leverageFail = checkLeverage(notional, ctx.balance, maxLeverage);
   if (leverageFail) {
     console.warn(`[ARES.RISK] Blocked by leverage guard: ${leverageFail}`);
     return { allowed: false, reason: leverageFail };

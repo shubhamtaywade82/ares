@@ -6,6 +6,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch -r dotenv/config src/main.ts",
+    "paper": "tsx -r dotenv/config src/paper/paper.flow.ts",
     "build": "tsc",
     "start": "node dist/main.js",
     "lint": "tsc --noEmit",

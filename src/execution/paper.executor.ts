@@ -450,13 +450,45 @@ export class PaperExecutor {
 
     const pos = existing;
     const contractValue = this.resolveContractValue(fill.productId, fill.productSymbol);
+    const fillSide = fill.side === "buy" ? "LONG" : "SHORT";
+
+    if (fillSide === pos.side) {
+      const totalQty = pos.qty + fill.qty;
+      const weightedEntry =
+        (pos.entryPrice * pos.qty + fill.price * fill.qty) / totalQty;
+      pos.entryPrice = weightedEntry;
+      pos.qty = totalQty;
+      return;
+    }
+
+    const closingQty = Math.min(pos.qty, fill.qty);
     const pnl =
       pos.side === "LONG"
-        ? (fill.price - pos.entryPrice) * fill.qty * contractValue
-        : (pos.entryPrice - fill.price) * fill.qty * contractValue;
+        ? (fill.price - pos.entryPrice) * closingQty * contractValue
+        : (pos.entryPrice - fill.price) * closingQty * contractValue;
 
     this.pnl.record(pnl - fee);
-    this.positions.close(fill.productId, fill.productSymbol);
+
+    if (fill.qty < pos.qty) {
+      pos.qty -= fill.qty;
+      return;
+    }
+
+    if (fill.qty === pos.qty) {
+      this.positions.close(fill.productId, fill.productSymbol);
+      return;
+    }
+
+    const remainingQty = fill.qty - pos.qty;
+    this.positions.open({
+      side: fillSide,
+      qty: remainingQty,
+      entryPrice: fill.price,
+      productId: fill.productId,
+      productSymbol: fill.productSymbol,
+      stopPrice: undefined,
+      targetPrice: undefined,
+    });
   }
 
   private findByClientOrderId(clientOrderId: string): PaperOrder | undefined {
