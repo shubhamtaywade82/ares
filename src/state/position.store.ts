@@ -2,24 +2,66 @@ export interface Position {
   side: "LONG" | "SHORT";
   qty: number;
   entryPrice: number;
+  productId?: number;
+  productSymbol?: string;
+  stopPrice?: number;
+  targetPrice?: number;
 }
 
 export class PositionStore {
-  private position: Position | undefined;
+  private static readonly defaultKey = "default";
+  private positions = new Map<string, Position>();
 
-  open(pos: Position) {
-    this.position = pos;
+  private keyFor(productId?: number, productSymbol?: string): string {
+    if (productId != null) return `id:${productId}`;
+    if (productSymbol) return `sym:${productSymbol.toUpperCase()}`;
+    return PositionStore.defaultKey;
   }
 
-  close() {
-    this.position = undefined;
+  open(pos: Position) {
+    const key = this.keyFor(pos.productId, pos.productSymbol);
+    this.positions.set(key, pos);
+  }
+
+  close(productId?: number, productSymbol?: string) {
+    const key = this.keyFor(productId, productSymbol);
+    this.positions.delete(key);
   }
 
   get current(): Position | undefined {
-    return this.position;
+    return (
+      this.positions.get(PositionStore.defaultKey) ??
+      this.positions.values().next().value
+    );
   }
 
   get isOpen(): boolean {
-    return this.position !== undefined;
+    return this.positions.size > 0;
+  }
+
+  getByProduct(productId?: number, productSymbol?: string): Position | undefined {
+    const key = this.keyFor(productId, productSymbol);
+    return this.positions.get(key);
+  }
+
+  updateBrackets(
+    productId: number | undefined,
+    productSymbol: string | undefined,
+    stopPrice?: number,
+    targetPrice?: number
+  ) {
+    const key = this.keyFor(productId, productSymbol);
+    const pos = this.positions.get(key);
+    if (!pos) return;
+    pos.stopPrice = stopPrice ?? pos.stopPrice;
+    pos.targetPrice = targetPrice ?? pos.targetPrice;
+  }
+
+  all(): Position[] {
+    return Array.from(this.positions.values());
+  }
+
+  closeAll() {
+    this.positions.clear();
   }
 }

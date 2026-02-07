@@ -39,7 +39,12 @@ export class OrderManager {
       const entry = this.paper.placeLimit(
         req.side === "LONG" ? "buy" : "sell",
         req.entryPrice,
-        req.qty
+        req.qty,
+        {
+          productSymbol: req.symbol,
+          clientOrderId,
+          role: "entry",
+        }
       );
       set.entryOrderId = entry.id;
       this.pendingPaperBrackets.set(entry.id, {
@@ -157,17 +162,33 @@ export class OrderManager {
     const stop = this.paper.placeStopMarket(
       pending.side === "LONG" ? "sell" : "buy",
       pending.stopPrice,
-      pending.qty
+      pending.qty,
+      {
+        productSymbol: pending.symbol,
+        clientOrderId: `${pending.clientOrderId}-SL`,
+        role: "stop",
+      }
     );
     const tp = this.paper.placeLimit(
       pending.side === "LONG" ? "sell" : "buy",
       pending.targetPrice,
-      pending.qty
+      pending.qty,
+      {
+        productSymbol: pending.symbol,
+        clientOrderId: `${pending.clientOrderId}-TP`,
+        role: "take_profit",
+      }
     );
 
     set.stopOrderId = stop.id;
     set.targetOrderId = tp.id;
     this.pendingPaperBrackets.delete(orderId);
     console.log("[ARES.PAPER] Bracket orders submitted");
+    this.paper.setPositionBrackets(
+      undefined,
+      pending.symbol,
+      pending.stopPrice,
+      pending.targetPrice
+    );
   }
 }
