@@ -17,10 +17,13 @@ export class OrderManager {
     const set = this.store.create(clientOrderId);
 
     if (this.mode === "paper") {
-      console.log("[PAPER] Entry filled", req);
+      console.log("[ARES.PAPER] Entry filled", req);
       return set;
     }
 
+    console.info(
+      `[ARES.EXECUTION] Submitting entry order ${req.symbol} ${req.side} qty=${req.qty}`
+    );
     let entry;
     try {
       entry = await this.rest.placeOrder({
@@ -49,6 +52,9 @@ export class OrderManager {
 
     let stop;
     try {
+      console.info(
+        `[ARES.EXECUTION] Submitting stop order ${req.symbol} ${req.side} qty=${req.qty}`
+      );
       stop = await this.rest.placeOrder({
         product_symbol: req.symbol,
         side: req.side === "LONG" ? "sell" : "buy",
@@ -76,6 +82,9 @@ export class OrderManager {
 
     let tp;
     try {
+      console.info(
+        `[ARES.EXECUTION] Submitting take-profit order ${req.symbol} ${req.side} qty=${req.qty}`
+      );
       tp = await this.rest.placeOrder({
         product_symbol: req.symbol,
         side: req.side === "LONG" ? "sell" : "buy",

@@ -16,6 +16,7 @@ export class MarketCache {
     const builder = this.builders.get(tf);
     if (!builder) throw new Error(`Unknown timeframe ${tf}`);
     builder.bootstrap(candles);
+    console.info(`[ARES.MARKET] Cached ${candles.length} candles for ${tf}`);
   }
 
   ingestTick(price: number, volume: number, timestamp: number) {

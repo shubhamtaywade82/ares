@@ -12,6 +12,7 @@ export class IndicatorCache {
 
   async update(tf: Timeframe): Promise<void> {
     const candles = this.market.candles(tf);
+    console.info(`[ARES.INDICATORS] Computing indicators for ${tf} (${candles.length} candles)`);
 
     const ema20 = computeEMA(candles, 20);
     const ema200 = computeEMA(candles, 200);
@@ -37,6 +38,7 @@ export class IndicatorCache {
     if (vwap !== undefined) snapshot.vwap = vwap;
 
     this.cache.set(tf, snapshot);
+    console.info(`[ARES.INDICATORS] ${tf} ready=${snapshot.ready}`);
   }
 
   snapshot(tf: Timeframe): IndicatorSnapshot {

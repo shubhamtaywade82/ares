@@ -14,10 +14,13 @@ export async function aiVeto(
   try {
     const parsed = JSON.parse(raw) as AIDecision;
     if (parsed.decision === "ALLOW") {
+      console.info(`[ARES.RISK] AI veto allow: ${parsed.reason}`);
       return { allowed: true, reason: parsed.reason };
     }
+    console.warn(`[ARES.RISK] AI veto block: ${parsed.reason}`);
     return { allowed: false, reason: parsed.reason };
   } catch {
+    console.warn("[ARES.RISK] AI veto block: AI_RESPONSE_INVALID");
     return { allowed: false, reason: "AI_RESPONSE_INVALID" };
   }
 }
