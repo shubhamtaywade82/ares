@@ -27,6 +27,7 @@ const EnvSchema = z.object({
   TRADING_MODE: z.enum(["paper", "live"]),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   FORCE_HTF_BIAS: z.enum(["LONG", "SHORT", "NONE"]).optional(),
+  PAPER_BALANCE: optionalNumber,
 });
 
 export const env = EnvSchema.parse(process.env);

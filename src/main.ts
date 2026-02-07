@@ -164,7 +164,10 @@ function resolveSession(): "ASIA" | "EU" | "US" {
 }
 
 async function getRiskContext(symbol: string): Promise<RiskContext> {
-  let balance = cachedBalance ?? 0;
+  let balance =
+    env.TRADING_MODE === "paper"
+      ? env.PAPER_BALANCE ?? cachedBalance ?? 0
+      : cachedBalance ?? 0;
   try {
     const res = await rest.getBalances();
     const balances = Array.isArray(res?.result) ? res.result : [];
@@ -179,7 +182,9 @@ async function getRiskContext(symbol: string): Promise<RiskContext> {
       cachedBalance = balance;
     }
   } catch (error) {
-    console.warn("[ARES.RISK] Failed to fetch balances, using cached value");
+    if (env.TRADING_MODE !== "paper") {
+      console.warn("[ARES.RISK] Failed to fetch balances, using cached value");
+    }
   }
 
   return {
