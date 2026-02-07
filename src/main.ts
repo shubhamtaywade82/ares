@@ -87,17 +87,51 @@ async function resolveProductIdBySymbol(rest: DeltaRestClient, symbol: string) {
 
 async function bootstrap() {
   const defaultSymbol = SYMBOLS.BTC_USDT.symbol;
-  const symbol = env.DELTA_PRODUCT_SYMBOL ?? defaultSymbol;
-  const productId =
-    env.DELTA_PRODUCT_ID ?? (await resolveProductIdBySymbol(rest, symbol));
+  let symbol = env.DELTA_PRODUCT_SYMBOL;
+  let productId = env.DELTA_PRODUCT_ID;
+
+  if (!symbol && productId) {
+    try {
+      const res = await rest.getProducts({
+        contract_types: "perpetual_futures",
+        states: "live",
+      });
+      const match = res.result.find(
+        (p: { symbol?: string; id?: number | string; product_id?: number | string }) => {
+          const rawId = p.id ?? p.product_id;
+          const id = typeof rawId === "string" ? Number(rawId) : rawId;
+          return Number.isFinite(id) && Number(id) === productId;
+        }
+      );
+      if (match?.symbol) {
+        symbol = match.symbol;
+        cachedProduct = match;
+      }
+    } catch (error) {
+      console.error(
+        `[ARES.MARKET] Failed to resolve product symbol for id ${productId}:`,
+        error
+      );
+    }
+  }
+
+  if (!symbol) {
+    symbol = defaultSymbol;
+  }
+
+  if (!productId) {
+    productId = await resolveProductIdBySymbol(rest, symbol);
+  }
 
   console.log(`[ARES.MARKET] Using product ${symbol} (id: ${productId ?? "unknown"})`);
 
-  try {
-    const res = await rest.getProductBySymbol(symbol);
-    cachedProduct = res?.result;
-  } catch (error) {
-    console.warn(`[ARES.MARKET] Failed to load product metadata for ${symbol}:`, error);
+  if (!cachedProduct) {
+    try {
+      const res = await rest.getProductBySymbol(symbol);
+      cachedProduct = res?.result;
+    } catch (error) {
+      console.warn(`[ARES.MARKET] Failed to load product metadata for ${symbol}:`, error);
+    }
   }
 
   await bootstrapMarket(rest, market, symbol);
