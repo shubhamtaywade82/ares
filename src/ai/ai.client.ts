@@ -55,6 +55,28 @@ export class AIClient {
 
     return res.data.choices[0].message.content;
   }
+
+  async healthCheck(timeoutMs = 1500): Promise<boolean> {
+    try {
+      if (this.provider === "ollama") {
+        await axios.get("http://localhost:11434/api/version", { timeout: timeoutMs });
+        return true;
+      }
+
+      if (!this.openaiApiKey) return false;
+
+      await axios.get("https://api.openai.com/v1/models", {
+        timeout: timeoutMs,
+        headers: {
+          Authorization: `Bearer ${this.openaiApiKey}`,
+        },
+      });
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 export function createAIClientFromEnv(): AIClient {
