@@ -19,7 +19,13 @@ export function calculatePositionSize(
     `[ARES.RISK] PositionSize balance=${balance} riskAmount=${riskAmount} stopDistance=${stopDistance} rawQty=${rawQty} maxLeverage=${maxLeverage} maxQty=${maxQty} minLotSize=${input.minLotSize}`
   );
 
-  if (sizedQty < input.minLotSize) return null;
+  if (sizedQty < input.minLotSize) {
+    return {
+      qty: input.minLotSize,
+      riskAmount,
+      stopDistance,
+    };
+  }
 
   return {
     qty: Math.floor(sizedQty / input.minLotSize) * input.minLotSize,
