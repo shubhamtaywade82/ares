@@ -4,6 +4,7 @@ import { computeHTFBias } from "./bias.htf.js";
 import { detectLTFSetup } from "./setup.ltf.js";
 import { scoreSetup } from "./scorer.js";
 import { SetupSignal } from "./types.js";
+import { env } from "../config/env.js";
 
 export async function runStrategy(
   market: MarketCache,
@@ -30,6 +31,10 @@ export async function runStrategy(
 
   const scored = scoreSetup(setup, indicators.snapshot("15m"));
   if (!scored) {
+    if (env.TRADING_MODE === "paper" && env.PAPER_BYPASS_SCORE) {
+      console.warn("[ARES.STRATEGY] Score below threshold; bypassing in paper");
+      return setup;
+    }
     console.info("[ARES.STRATEGY] Setup score below threshold");
     return null;
   }

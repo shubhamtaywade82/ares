@@ -190,21 +190,24 @@ async function getRiskContext(symbol: string): Promise<RiskContext> {
     env.TRADING_MODE === "paper"
       ? env.PAPER_BALANCE ?? cachedBalance ?? 0
       : cachedBalance ?? 0;
-  try {
-    const res = await rest.getBalances();
-    const balances = Array.isArray(res?.result) ? res.result : [];
-    const preferred =
-      balances.find((b: any) => b.asset === "USD") ??
-      balances.find((b: any) => b.asset === "USDT") ??
-      balances[0];
-    const raw = preferred?.available_balance ?? preferred?.balance;
-    const parsed = typeof raw === "string" ? Number(raw) : raw;
-    if (Number.isFinite(parsed)) {
-      balance = Number(parsed);
-      cachedBalance = balance;
-    }
-  } catch (error) {
-    if (env.TRADING_MODE !== "paper") {
+  if (env.TRADING_MODE === "paper" && env.PAPER_BALANCE == null) {
+    console.warn("[ARES.RISK] PAPER_BALANCE not set; using cached/zero balance");
+  }
+  if (env.TRADING_MODE !== "paper") {
+    try {
+      const res = await rest.getBalances();
+      const balances = Array.isArray(res?.result) ? res.result : [];
+      const preferred =
+        balances.find((b: any) => b.asset === "USD") ??
+        balances.find((b: any) => b.asset === "USDT") ??
+        balances[0];
+      const raw = preferred?.available_balance ?? preferred?.balance;
+      const parsed = typeof raw === "string" ? Number(raw) : raw;
+      if (Number.isFinite(parsed)) {
+        balance = Number(parsed);
+        cachedBalance = balance;
+      }
+    } catch (error) {
       console.warn("[ARES.RISK] Failed to fetch balances, using cached value");
     }
   }

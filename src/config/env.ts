@@ -28,6 +28,15 @@ const EnvSchema = z.object({
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   FORCE_HTF_BIAS: z.enum(["LONG", "SHORT", "NONE"]).optional(),
   PAPER_BALANCE: optionalNumber,
+  PAPER_BYPASS_SCORE: z
+    .preprocess(
+      (value) =>
+        typeof value === "string" && value.trim() === ""
+          ? undefined
+          : value,
+      z.coerce.boolean().optional()
+    )
+    .default(false),
 });
 
 export const env = EnvSchema.parse(process.env);
