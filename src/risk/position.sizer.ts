@@ -11,6 +11,9 @@ export function calculatePositionSize(
   if (stopDistance <= 0) return null;
 
   const rawQty = riskAmount / stopDistance;
+  console.info(
+    `[ARES.RISK] PositionSize balance=${balance} riskAmount=${riskAmount} stopDistance=${stopDistance} rawQty=${rawQty} minLotSize=${input.minLotSize}`
+  );
 
   if (rawQty < input.minLotSize) return null;
 
