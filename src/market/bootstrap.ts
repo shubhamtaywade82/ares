@@ -7,24 +7,34 @@ export async function bootstrapMarket(
   symbol: string
 ) {
   const end = Math.floor(Date.now() / 1000);
-  const start = end - 60 * 60 * 24 * 2;
-  const results = await Promise.allSettled([
-    rest.getCandles(symbol, "1m", start, end),
-    rest.getCandles(symbol, "5m", start, end),
-    rest.getCandles(symbol, "15m", start, end),
-  ]);
+  const timeframes: Array<{ tf: "1m" | "5m" | "15m"; lookbackSeconds: number }> = [
+    { tf: "1m", lookbackSeconds: 60 * 60 * 6 },
+    { tf: "5m", lookbackSeconds: 60 * 60 * 24 * 3 },
+    { tf: "15m", lookbackSeconds: 60 * 60 * 24 * 7 },
+  ];
 
-  const tfs: Array<"1m" | "5m" | "15m"> = ["1m", "5m", "15m"];
-  results.forEach((result, index) => {
-    const tf = tfs[index];
-    if (result.status === "fulfilled") {
-      cache.bootstrap(tf, result.value.result);
-      return;
+  for (const { tf, lookbackSeconds } of timeframes) {
+    try {
+      const start = end - lookbackSeconds;
+      const startedAt = Date.now();
+      console.info(
+        `[ARES.MARKET] Bootstrapping ${tf} from ${start} to ${end} (limit 200)...`
+      );
+      const result = await rest.getCandles(symbol, tf, start, end, 200, {
+        timeoutMs: 30_000,
+        retries: 3,
+        retryBaseDelayMs: 1000,
+        retryMaxDelayMs: 8000,
+      });
+      const elapsedMs = Date.now() - startedAt;
+      console.info(
+        `[ARES.MARKET] Bootstrap ${tf} succeeded (${result.result.length} candles in ${elapsedMs}ms)`
+      );
+      cache.bootstrap(tf, result.result);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(`[ARES.MARKET] Bootstrap failed for ${tf}: ${reason}`);
+      cache.bootstrap(tf, []);
     }
-
-    const reason =
-      result.reason instanceof Error ? result.reason.message : String(result.reason);
-    console.error(`[ARES.MARKET] Bootstrap failed for ${tf}: ${reason}`);
-    cache.bootstrap(tf, []);
-  });
+  }
 }

@@ -4,6 +4,17 @@ import { env } from "../config/env.js";
 import { DeltaSigner } from "./signer.js";
 import { DELTA_CONFIG } from "../config/delta.js";
 
+type RequestOptions = {
+  timeoutMs?: number;
+};
+
+type CandleRequestOptions = {
+  timeoutMs?: number;
+  retries?: number;
+  retryBaseDelayMs?: number;
+  retryMaxDelayMs?: number;
+};
+
 export class DeltaRestClient {
   private client: AxiosInstance;
 
@@ -19,7 +30,8 @@ export class DeltaRestClient {
     path: string,
     body?: object,
     schema?: z.ZodSchema<T>,
-    authRequired = true
+    authRequired = true,
+    options?: RequestOptions
   ): Promise<T> {
     const [pathOnly = path, queryString = ""] = path.split("?");
     const headers: Record<string, string> = {
@@ -41,12 +53,26 @@ export class DeltaRestClient {
       headers["signature"] = signature;
     }
 
-    const res = await this.client.request({
-      method,
-      url: path,
-      data: body,
-      headers,
-    });
+    let res;
+    try {
+      res = await this.client.request({
+        method,
+        url: path,
+        data: body,
+        headers,
+        timeout: options?.timeoutMs,
+      });
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status;
+        const data = error.response?.data;
+        const code = error.code ? ` ${error.code}` : "";
+        const timeout = error.config?.timeout ? ` timeout=${error.config.timeout}` : "";
+        const details = data ? JSON.stringify(data) : error.message;
+        throw new Error(`Delta API ${status ?? "error"}${code}${timeout}: ${details}`);
+      }
+      throw error;
+    }
 
     if (!schema) return res.data;
 
@@ -154,18 +180,40 @@ export class DeltaRestClient {
     resolution: string,
     start: number,
     end: number,
-    limit = 200
+    limit = 200,
+    options?: CandleRequestOptions
   ) {
-    const normalizedResolution =
-      resolution.endsWith("m") && Number.isFinite(Number(resolution.slice(0, -1)))
-        ? resolution.slice(0, -1)
-        : resolution;
-    return this.request(
-      "GET",
-      `/v2/history/candles?symbol=${symbol}&resolution=${normalizedResolution}&start=${start}&end=${end}&limit=${limit}`,
-      undefined,
-      z.object({ result: z.array(z.any()) }),
-      false
-    );
+    const normalizedResolution = resolution;
+    const retries = options?.retries ?? 3;
+    const baseDelay = options?.retryBaseDelayMs ?? 1000;
+    const maxDelay = options?.retryMaxDelayMs ?? 8000;
+
+    const attemptRequest = async () =>
+      this.request(
+        "GET",
+        `/v2/history/candles?symbol=${symbol}&resolution=${normalizedResolution}&start=${start}&end=${end}&limit=${limit}`,
+        undefined,
+        z.object({ result: z.array(z.any()) }),
+        false,
+        { timeoutMs: options?.timeoutMs }
+      );
+
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    return (async () => {
+      let lastError: unknown;
+      for (let attempt = 1; attempt <= retries; attempt += 1) {
+        try {
+          return await attemptRequest();
+        } catch (error) {
+          lastError = error;
+          if (attempt >= retries) break;
+          const backoff = Math.min(maxDelay, baseDelay * 2 ** (attempt - 1));
+          const jitter = Math.floor(Math.random() * 250);
+          await sleep(backoff + jitter);
+        }
+      }
+      throw lastError;
+    })();
   }
 }
