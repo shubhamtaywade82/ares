@@ -20,6 +20,6 @@ Respond format:
 
 Trade Context:
 ${JSON.stringify(input, null, 2)}
-`,
+Return ONLY the JSON object. No explanations. No markdown. No code fences.`,
   };
 }

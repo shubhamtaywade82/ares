@@ -43,28 +43,7 @@ process.on("SIGINT", () => {
   KillSwitch.trigger(KillReason.MANUAL);
 });
 
-const ws = new DeltaWsClient(
-  (msg: TickerMessage) => {
-    if (msg.type === "ticker") {
-      const price = Number(msg.price);
-      const volume = Number(msg.volume);
-      const timestamp = Number(msg.timestamp);
-
-      if (Number.isFinite(price) && Number.isFinite(volume) && Number.isFinite(timestamp)) {
-        market.ingestTick(price, volume, timestamp);
-        if (!bootstrapped) return;
-        const closed = market.lastClosed("1m");
-        if (!closed || closed.timestamp === lastClosed1m) return;
-        lastClosed1m = closed.timestamp;
-        void onNew1mClose();
-      }
-    }
-  },
-  () => {
-    console.error("KILL SWITCH TRIGGERED");
-    process.exit(1);
-  }
-);
+let ws: DeltaWsClient | undefined;
 
 async function resolveProductIdBySymbol(rest: DeltaRestClient, symbol: string) {
   try {
@@ -115,6 +94,48 @@ async function bootstrap() {
 
   await bootstrapMarket(rest, market, symbol);
   bootstrapped = true;
+
+  ws = new DeltaWsClient(
+    (msg: TickerMessage) => {
+      const msgType = msg.type;
+      const isTicker = msgType === "ticker" || msgType === "v2/ticker";
+      if (!isTicker) return;
+
+      const rawPrice =
+        (msg as any).mark_price ??
+        (msg as any).close ??
+        (msg as any).spot_price ??
+        msg.price;
+      const price = Number(rawPrice);
+      const volume = Number(msg.volume ?? 0);
+      const rawTs =
+        (msg as any).timestamp ??
+        (msg as any).ts ??
+        (msg as any).time;
+      const parsedTs = Number(rawTs);
+
+      if (!Number.isFinite(price) || !Number.isFinite(parsedTs)) {
+        return;
+      }
+
+      const tsMs = parsedTs > 1e12 ? parsedTs / 1000 : parsedTs;
+      market.ingestTick(price, volume, tsMs);
+      if (!bootstrapped) return;
+      const closed = market.lastClosed("1m");
+      if (!closed || closed.timestamp === lastClosed1m) return;
+      lastClosed1m = closed.timestamp;
+      void onNew1mClose();
+    },
+    () => {
+      console.error("KILL SWITCH TRIGGERED");
+      process.exit(1);
+    },
+    () => {
+      console.info("[ARES.MARKET] WS connected; subscribing to ticker");
+      ws?.subscribe("v2/ticker", [symbol]);
+    }
+  );
+
   ws.connect();
 }
 

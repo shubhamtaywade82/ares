@@ -20,7 +20,7 @@ export class AIClient {
   constructor(options: AIClientOptions) {
     this.provider = options.provider;
     this.ollamaUrl = options.ollamaUrl ?? "http://localhost:11434/api/chat";
-    this.ollamaModel = options.ollamaModel ?? "llama3";
+    this.ollamaModel = options.ollamaModel ?? "llama3.1:8b";
     this.openaiModel = options.openaiModel ?? "gpt-4.1-mini";
     this.openaiApiKey = options.openaiApiKey ?? process.env.OPENAI_API_KEY;
   }
@@ -31,6 +31,8 @@ export class AIClient {
         model: this.ollamaModel,
         messages: [prompt],
         stream: false,
+        format: "json",
+        options: { temperature: 0 },
       });
       return res.data.message.content;
     }

@@ -10,13 +10,18 @@ export class DeltaWsClient {
   private ws?: WebSocket;
   private heartbeat?: NodeJS.Timeout;
 
-  constructor(private onMessage: WsHandler, private onFatal: () => void) {}
+  constructor(
+    private onMessage: WsHandler,
+    private onFatal: () => void,
+    private onOpen?: () => void
+  ) {}
 
   connect() {
     this.ws = new WebSocket(env.DELTA_WS_URL);
 
     this.ws.on("open", () => {
       this.startHeartbeat();
+      this.onOpen?.();
     });
 
     this.ws.on("message", (data) => {
@@ -35,6 +40,25 @@ export class DeltaWsClient {
   send(payload: object) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify(payload));
+  }
+
+  subscribe(channel: string, symbols?: string[]) {
+    const payload = {
+      type: "subscribe",
+      payload: {
+        channels: [
+          symbols
+            ? {
+                name: channel,
+                symbols,
+              }
+            : {
+                name: channel,
+              },
+        ],
+      },
+    };
+    this.send(payload);
   }
 
   private startHeartbeat() {
