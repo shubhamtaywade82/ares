@@ -6,9 +6,10 @@ export class DeltaSigner {
     method: string,
     path: string,
     timestamp: number,
-    body: string = ""
+    body: string = "",
+    queryString: string = ""
   ): string {
-    const payload = `${method}${timestamp}${path}${body}`;
+    const payload = `${method}${timestamp}${path}${queryString}${body}`;
     return crypto
       .createHmac("sha256", env.DELTA_API_SECRET)
       .update(payload)

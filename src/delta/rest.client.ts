@@ -18,28 +18,34 @@ export class DeltaRestClient {
     method: "GET" | "POST" | "DELETE",
     path: string,
     body?: object,
-    schema?: z.ZodSchema<T>
+    schema?: z.ZodSchema<T>,
+    authRequired = true
   ): Promise<T> {
-    const timestamp = Date.now();
-    const bodyString = body ? JSON.stringify(body) : "";
+    const [pathOnly = path, queryString = ""] = path.split("?");
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
 
-    const signature = DeltaSigner.sign(
-      method,
-      path,
-      timestamp,
-      bodyString
-    );
+    if (authRequired) {
+      const timestamp = Math.floor(Date.now() / 1000);
+      const bodyString = body ? JSON.stringify(body) : "";
+      const signature = DeltaSigner.sign(
+        method,
+        pathOnly,
+        timestamp,
+        bodyString,
+        queryString ? `?${queryString}` : ""
+      );
+      headers["api-key"] = env.DELTA_API_KEY;
+      headers["timestamp"] = String(timestamp);
+      headers["signature"] = signature;
+    }
 
     const res = await this.client.request({
       method,
       url: path,
       data: body,
-      headers: {
-        "api-key": env.DELTA_API_KEY,
-        "timestamp": timestamp,
-        "signature": signature,
-        "Content-Type": "application/json",
-      },
+      headers,
     });
 
     if (!schema) return res.data;
@@ -49,12 +55,61 @@ export class DeltaRestClient {
 
   // ---------- ENDPOINTS ----------
 
-  getProducts() {
+  getProducts(params?: {
+    contract_types?: string;
+    states?: string;
+    after?: string;
+    before?: string;
+    page_size?: number;
+    expiry?: string;
+  }) {
+    const search = new URLSearchParams();
+    if (params?.contract_types) search.set("contract_types", params.contract_types);
+    if (params?.states) search.set("states", params.states);
+    if (params?.after) search.set("after", params.after);
+    if (params?.before) search.set("before", params.before);
+    if (params?.page_size !== undefined) search.set("page_size", String(params.page_size));
+    if (params?.expiry) search.set("expiry", params.expiry);
+    const qs = search.toString();
+
     return this.request(
       "GET",
-      "/v2/products",
+      qs ? `/v2/products?${qs}` : "/v2/products",
       undefined,
-      z.object({ result: z.array(z.any()) })
+      z.object({ result: z.array(z.any()) }),
+      false
+    );
+  }
+
+  getProductBySymbol(symbol: string) {
+    return this.request(
+      "GET",
+      `/v2/products/${symbol}`,
+      undefined,
+      z.object({ result: z.any() }),
+      false
+    );
+  }
+
+  getTickers(params?: {
+    contract_types?: string;
+    underlying_asset_symbols?: string;
+    expiry_date?: string;
+  }) {
+    const search = new URLSearchParams();
+    if (params?.contract_types) search.set("contract_types", params.contract_types);
+    if (params?.underlying_asset_symbols) {
+      search.set("underlying_asset_symbols", params.underlying_asset_symbols);
+    }
+    if (params?.expiry_date) search.set("expiry_date", params.expiry_date);
+    const qs = search.toString();
+
+    return this.request(
+      "GET",
+      qs ? `/v2/tickers?${qs}` : "/v2/tickers",
+      undefined,
+      z.object({ result: z.array(z.any()) }),
+      false
     );
   }
 
@@ -99,7 +154,8 @@ export class DeltaRestClient {
       "GET",
       `/v2/history/candles?symbol=${symbol}&resolution=${resolution}&limit=${limit}`,
       undefined,
-      z.object({ result: z.array(z.any()) })
+      z.object({ result: z.array(z.any()) }),
+      false
     );
   }
 }
