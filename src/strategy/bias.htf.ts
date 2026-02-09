@@ -35,20 +35,24 @@ export function computeHTFBias(
     return "NONE";
   }
 
-  if (last.close > ind.ema200 && ind.rsi14 > 55) {
+  const priceAboveEma = last.close >= ind.ema200;
+  const distanceFromEma = Math.abs(last.close - ind.ema200) / ind.ema200;
+
+  // Small neutral band very close to EMA and mid RSI to occasionally return NONE
+  if (distanceFromEma < 0.002 && ind.rsi14 >= 48 && ind.rsi14 <= 52) {
+    console.info(
+      `[ARES.STRATEGY] HTF bias NONE (neutral band): ema200=${ind.ema200.toFixed(
+        2
+      )} rsi14=${ind.rsi14.toFixed(2)} last=${JSON.stringify(
+        last
+      )} prev=${JSON.stringify(prev)} prev2=${JSON.stringify(prev2)}`
+    );
+    return "NONE";
+  }
+
+  if (priceAboveEma || ind.rsi14 >= 50) {
     return "LONG";
   }
 
-  if (last.close < ind.ema200 && ind.rsi14 < 45) {
-    return "SHORT";
-  }
-
-  console.info(
-    `[ARES.STRATEGY] HTF bias NONE: ema200=${ind.ema200.toFixed(
-      2
-    )} rsi14=${ind.rsi14.toFixed(2)} last=${JSON.stringify(
-      last
-    )} prev=${JSON.stringify(prev)} prev2=${JSON.stringify(prev2)}`
-  );
-  return "NONE";
+  return "SHORT";
 }

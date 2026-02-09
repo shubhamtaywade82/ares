@@ -13,6 +13,8 @@ type SymbolConfig = {
   symbol: string;
 };
 
+const BTC_MIN_CAPITAL = 20_000;
+
 function normalizeSymbols(): SymbolConfig[] {
   const rawList = env.DELTA_PRODUCT_SYMBOLS;
   if (rawList) {
@@ -26,6 +28,17 @@ function normalizeSymbols(): SymbolConfig[] {
     return [{ symbol: env.DELTA_PRODUCT_SYMBOL.toUpperCase() }];
   }
   return [{ symbol: SYMBOLS.BTC_USDT.symbol }];
+}
+
+function isSymbolEligible(symbol: string, capital: number): boolean {
+  const upper = symbol.toUpperCase();
+  if (upper.startsWith("BTC") && capital < BTC_MIN_CAPITAL) {
+    console.log(
+      `[ARES.PAPER] Skipping ${upper} — capital ₹${capital} < BTC min ₹${BTC_MIN_CAPITAL}`
+    );
+    return false;
+  }
+  return true;
 }
 
 async function determineSide(symbol: string): Promise<"buy" | "sell" | null> {
@@ -63,7 +76,8 @@ async function run(): Promise<void> {
 
   let shouldStop = false;
 
-  const list = normalizeSymbols();
+  const configured = normalizeSymbols();
+  const list = configured.filter((cfg) => isSymbolEligible(cfg.symbol, capital));
   if (list.length === 0) {
     console.warn("[ARES.PAPER] No symbols configured for paper flow");
     return;
