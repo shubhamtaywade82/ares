@@ -7,6 +7,7 @@ export interface ExecutionRequest {
   stopPrice: number;
   targetPrice: number;
   qty: number;
+  useMarketEntry?: boolean;
 }
 
 export interface ActiveOrderSet {

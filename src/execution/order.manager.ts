@@ -36,16 +36,25 @@ export class OrderManager {
         return set;
       }
 
-      const entry = this.paper.placeLimit(
-        req.side === "LONG" ? "buy" : "sell",
-        req.entryPrice,
-        req.qty,
-        {
-          productSymbol: req.symbol,
-          clientOrderId,
-          role: "entry",
-        }
-      );
+      const useMarket = req.useMarketEntry === true;
+      const entry = useMarket
+        ? this.paper.placeOrder({
+            product_symbol: req.symbol,
+            size: req.qty,
+            side: req.side === "LONG" ? "buy" : "sell",
+            order_type: "market",
+            client_order_id: clientOrderId,
+          })
+        : this.paper.placeLimit(
+            req.side === "LONG" ? "buy" : "sell",
+            req.entryPrice,
+            req.qty,
+            {
+              productSymbol: req.symbol,
+              clientOrderId,
+              role: "entry",
+            }
+          );
       set.entryOrderId = entry.id;
       this.pendingPaperBrackets.set(entry.id, {
         symbol: req.symbol,

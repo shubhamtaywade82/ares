@@ -62,7 +62,7 @@ type PaperBracketRequest = {
 export class PaperExecutor {
   private orders = new Map<string, PaperOrder>();
   private onOrderUpdate?: OrderUpdateHandler;
-  private lastPrice: number | undefined;
+  private lastPrices = new Map<string, number>();
   private leverages = new Map<string, number>();
   private contractValues = new Map<string, number>();
 
@@ -317,7 +317,8 @@ export class PaperExecutor {
   closePosition(productId?: number, productSymbol?: string, price?: number) {
     const pos = this.positions.getByProduct(productId, productSymbol);
     if (!pos) return;
-    const fillPrice = price ?? this.lastPrice ?? pos.entryPrice;
+    const fillPrice =
+      price ?? this.lastPriceFor(productId, productSymbol) ?? pos.entryPrice;
     const contractValue = this.resolveContractValue(productId, productSymbol);
     const fee = fillPrice * pos.qty * contractValue * PAPER_CONFIG.takerFeePct;
     const side = pos.side === "LONG" ? "sell" : "buy";
@@ -347,10 +348,12 @@ export class PaperExecutor {
     this.orders.delete(orderId);
   }
 
-  onTick(price: number) {
-    this.lastPrice = price;
+  onTick(price: number, productId?: number, productSymbol?: string) {
+    const key = this.leverageKey(productId, productSymbol);
+    this.lastPrices.set(key, price);
     for (const order of this.orders.values()) {
       if (order.status !== "open") continue;
+      if (!this.matchesOrder(order, productId, productSymbol)) continue;
 
       if (order.role === "stop" || order.role === "take_profit") {
         continue;
@@ -381,7 +384,7 @@ export class PaperExecutor {
       }
     }
 
-    this.checkPositionBrackets(price);
+    this.checkPositionBrackets(price, productId, productSymbol);
   }
 
   private fillOrder(order: PaperOrder, marketPrice: number, isMaker: boolean) {
@@ -527,15 +530,23 @@ export class PaperExecutor {
 
     this.orders.set(order.id, order);
 
-    if (order.type === "market" && this.lastPrice != null) {
-      this.fillOrder(order, this.lastPrice, false);
+    if (order.type === "market") {
+      const lastPrice = this.lastPriceFor(order.productId, order.productSymbol);
+      if (lastPrice != null) {
+        this.fillOrder(order, lastPrice, false);
+      }
     }
 
     return order;
   }
 
-  private checkPositionBrackets(price: number) {
+  private checkPositionBrackets(
+    price: number,
+    productId?: number,
+    productSymbol?: string
+  ) {
     for (const pos of this.positions.all()) {
+      if (!this.matchesPosition(pos, productId, productSymbol)) continue;
       if (pos.stopPrice == null && pos.targetPrice == null) continue;
       const isLong = pos.side === "LONG";
       const hitStop = pos.stopPrice != null && (isLong ? price <= pos.stopPrice : price >= pos.stopPrice);
@@ -566,6 +577,45 @@ export class PaperExecutor {
     if (productId != null) return `id:${productId}`;
     if (productSymbol) return `sym:${productSymbol.toUpperCase()}`;
     return "default";
+  }
+
+  private lastPriceFor(productId?: number, productSymbol?: string) {
+    const key = this.leverageKey(productId, productSymbol);
+    return this.lastPrices.get(key);
+  }
+
+  private matchesOrder(
+    order: PaperOrder,
+    productId?: number,
+    productSymbol?: string
+  ) {
+    if (productId != null && order.productId != null) {
+      return order.productId === productId;
+    }
+    if (productSymbol && order.productSymbol) {
+      return order.productSymbol.toUpperCase() === productSymbol.toUpperCase();
+    }
+    if (productId == null && productSymbol == null) {
+      return order.productId == null && order.productSymbol == null;
+    }
+    return false;
+  }
+
+  private matchesPosition(
+    pos: { productId?: number; productSymbol?: string },
+    productId?: number,
+    productSymbol?: string
+  ) {
+    if (productId != null && pos.productId != null) {
+      return pos.productId === productId;
+    }
+    if (productSymbol && pos.productSymbol) {
+      return pos.productSymbol.toUpperCase() === productSymbol.toUpperCase();
+    }
+    if (productId == null && productSymbol == null) {
+      return pos.productId == null && pos.productSymbol == null;
+    }
+    return false;
   }
 
   private resolveContractValue(productId?: number, productSymbol?: string) {

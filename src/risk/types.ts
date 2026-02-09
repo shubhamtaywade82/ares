@@ -2,6 +2,7 @@ export interface RiskContext {
   balance: number;
   dailyPnl: number;
   openTrades: number;
+  openTradesBySymbol: Record<string, number>;
 }
 
 export interface TradeRiskInput {

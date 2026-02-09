@@ -283,7 +283,7 @@ export class PaperTrader {
         const price = Number(rawPrice);
         if (!Number.isFinite(price)) return;
 
-        this.paper.onTick(price);
+        this.paper.onTick(price, productId, symbol);
         this.handleTick(productId, symbol, price, stopLoss, takeProfit);
       },
       () => {

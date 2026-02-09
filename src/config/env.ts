@@ -23,11 +23,21 @@ const EnvSchema = z.object({
     .url()
     .default("wss://socket.india.delta.exchange"),
   DELTA_PRODUCT_SYMBOL: optionalString,
+  DELTA_PRODUCT_SYMBOLS: optionalString,
   DELTA_PRODUCT_ID: optionalNumber,
   TRADING_MODE: z.enum(["paper", "live"]),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   FORCE_HTF_BIAS: z.enum(["LONG", "SHORT", "NONE"]).optional(),
   PAPER_BALANCE: optionalNumber,
+  PAPER_MARKET_ENTRY: z
+    .preprocess(
+      (value) =>
+        typeof value === "string" && value.trim() === ""
+          ? undefined
+          : value,
+      z.coerce.boolean().optional()
+    )
+    .default(false),
   PAPER_BYPASS_SCORE: z
     .preprocess(
       (value) =>

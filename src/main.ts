@@ -3,14 +3,13 @@ import { DeltaRestClient } from "./delta/rest.client.js";
 import { DeltaWsClient } from "./delta/ws.client.js";
 import { MarketCache } from "./market/market.cache.js";
 import { bootstrapMarket } from "./market/bootstrap.js";
-import { SYMBOLS } from "./market/symbol.registry.js";
 import { env } from "./config/env.js";
 import { KillSwitch } from "./risk/kill.switch.js";
 import { KillReason } from "./risk/kill.reasons.js";
 import { IndicatorCache } from "./indicators/indicator.cache.js";
 import { runStrategy } from "./strategy/strategy.runner.js";
 import { evaluateRisk } from "./risk/risk.evaluator.js";
-import { RISK_CONFIG } from "./config/risk.js";
+import { RISK_CONFIG, resolveMaxLeverage } from "./config/risk.js";
 import { computeHTFBias } from "./strategy/bias.htf.js";
 import { computeTargets } from "./execution/sltp.manager.js";
 import { createAIClientFromEnv } from "./ai/ai.client.js";
@@ -28,11 +27,20 @@ type TickerMessage = {
   price?: number | string;
   volume?: number | string;
   timestamp?: number;
+  symbol?: string;
+};
+
+type SymbolContext = {
+  symbol: string;
+  productId?: number;
+  market: MarketCache;
+  indicators: IndicatorCache;
+  lastClosed1m: number;
+  running: boolean;
+  cachedProduct?: any;
 };
 
 const rest = new DeltaRestClient();
-const market = new MarketCache();
-const indicators = new IndicatorCache(market);
 const aiClient = createAIClientFromEnv();
 const orderStore = new OrderStore();
 const positions = new PositionStore();
@@ -41,23 +49,35 @@ const paper = env.TRADING_MODE === "paper" ? new PaperExecutor(positions, pnl) :
 const ocoManager = new OcoManager(orderStore, rest, env.TRADING_MODE, paper);
 const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE, paper);
 
-let bootstrapped = false;
-let lastClosed1m = 0;
-let running = false;
+const symbolContexts = new Map<string, SymbolContext>();
+const livePositions = new Map<string, any>();
+
 let cachedBalance: number | undefined;
-let cachedProduct: any;
-let wsSymbol: string | undefined;
+let lastPaperLogAt = 0;
+let ws: DeltaWsClient | undefined;
 
 process.on("SIGINT", () => {
   KillSwitch.trigger(KillReason.MANUAL);
 });
 
-let ws: DeltaWsClient | undefined;
-let livePosition: any | undefined;
+function normalizeSymbols(): string[] {
+  const rawList = env.DELTA_PRODUCT_SYMBOLS;
+  if (rawList) {
+    return rawList
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .map((s) => s.toUpperCase());
+  }
+  if (env.DELTA_PRODUCT_SYMBOL) {
+    return [env.DELTA_PRODUCT_SYMBOL.toUpperCase()];
+  }
+  return ["BTCUSD", "ETHUSD", "XRPUSD", "SOLUSD"];
+}
 
-async function resolveProductIdBySymbol(rest: DeltaRestClient, symbol: string) {
+async function resolveProductIdBySymbol(restClient: DeltaRestClient, symbol: string) {
   try {
-    const res = await rest.getProductBySymbol(symbol);
+    const res = await restClient.getProductBySymbol(symbol);
     const rawId = res?.result?.id ?? res?.result?.product_id ?? res?.result?.productId;
     const id = typeof rawId === "string" ? Number(rawId) : rawId;
     if (Number.isFinite(id)) return Number(id);
@@ -66,7 +86,7 @@ async function resolveProductIdBySymbol(rest: DeltaRestClient, symbol: string) {
   }
 
   try {
-    const res = await rest.getProducts({
+    const res = await restClient.getProducts({
       contract_types: "perpetual_futures",
       states: "live",
     });
@@ -88,63 +108,58 @@ async function resolveProductIdBySymbol(rest: DeltaRestClient, symbol: string) {
 }
 
 async function bootstrap() {
-  const defaultSymbol = SYMBOLS.BTC_USDT.symbol;
-  let symbol = env.DELTA_PRODUCT_SYMBOL;
-  let productId = env.DELTA_PRODUCT_ID;
+  const symbols = normalizeSymbols();
+  if (symbols.length === 0) {
+    throw new Error("No symbols configured for trading");
+  }
 
-  if (!symbol && productId) {
-    try {
-      const res = await rest.getProducts({
-        contract_types: "perpetual_futures",
-        states: "live",
-      });
-      const match = res.result.find(
-        (p: { symbol?: string; id?: number | string; product_id?: number | string }) => {
-          const rawId = p.id ?? p.product_id;
-          const id = typeof rawId === "string" ? Number(rawId) : rawId;
-          return Number.isFinite(id) && Number(id) === productId;
-        }
-      );
-      if (match?.symbol) {
-        symbol = match.symbol;
-        cachedProduct = match;
-      }
-    } catch (error) {
-      console.error(
-        `[ARES.MARKET] Failed to resolve product symbol for id ${productId}:`,
-        error
-      );
+  for (const symbol of symbols) {
+    const market = new MarketCache();
+    const indicators = new IndicatorCache(market);
+    const context: SymbolContext = {
+      symbol,
+      productId: undefined,
+      market,
+      indicators,
+      lastClosed1m: 0,
+      running: false,
+      cachedProduct: undefined,
+    };
+
+    let productId = env.DELTA_PRODUCT_ID;
+    if (env.DELTA_PRODUCT_SYMBOL && env.DELTA_PRODUCT_SYMBOL !== symbol) {
+      productId = undefined;
     }
-  }
 
-  if (!symbol) {
-    symbol = defaultSymbol;
-  }
+    if (!productId) {
+      productId = await resolveProductIdBySymbol(rest, symbol);
+    }
 
-  wsSymbol = symbol;
+    context.productId = productId;
+    console.log(`[ARES.MARKET] Using product ${symbol} (id: ${productId ?? "unknown"})`);
 
-  if (!productId) {
-    productId = await resolveProductIdBySymbol(rest, symbol);
-  }
-
-  console.log(`[ARES.MARKET] Using product ${symbol} (id: ${productId ?? "unknown"})`);
-
-  if (!cachedProduct) {
     try {
       const res = await rest.getProductBySymbol(symbol);
-      cachedProduct = res?.result;
+      context.cachedProduct = res?.result;
+      if (paper && context.cachedProduct?.contract_value != null) {
+        const raw = context.cachedProduct.contract_value;
+        const contractValue = typeof raw === "string" ? Number(raw) : raw;
+        if (Number.isFinite(contractValue) && contractValue > 0) {
+          paper.setContractValue(productId, symbol, contractValue);
+        }
+      }
     } catch (error) {
       console.warn(`[ARES.MARKET] Failed to load product metadata for ${symbol}:`, error);
     }
-  }
 
-  await bootstrapMarket(rest, market, symbol);
-  bootstrapped = true;
+    await bootstrapMarket(rest, market, symbol);
+
+    symbolContexts.set(symbol.toUpperCase(), context);
+  }
 
   ws = new DeltaWsClient(
     (msg: TickerMessage) => {
       const msgType = msg.type;
-      const isTicker = msgType === "ticker" || msgType === "v2/ticker";
       if (msgType === "orders") {
         handleOrderUpdate(msg);
         return;
@@ -153,7 +168,15 @@ async function bootstrap() {
         handlePositionUpdate(msg);
         return;
       }
+
+      const isTicker = msgType === "ticker" || msgType === "v2/ticker";
       if (!isTicker) return;
+
+      const symbol =
+        (msg as any).symbol ?? (msg as any).product_symbol ?? (msg as any).productSymbol;
+      if (!symbol) return;
+      const ctx = symbolContexts.get(String(symbol).toUpperCase());
+      if (!ctx) return;
 
       const rawPrice =
         (msg as any).mark_price ??
@@ -162,10 +185,7 @@ async function bootstrap() {
         msg.price;
       const price = Number(rawPrice);
       const volume = Number(msg.volume ?? 0);
-      const rawTs =
-        (msg as any).timestamp ??
-        (msg as any).ts ??
-        (msg as any).time;
+      const rawTs = (msg as any).timestamp ?? (msg as any).ts ?? (msg as any).time;
       const parsedTs = Number(rawTs);
 
       if (!Number.isFinite(price) || !Number.isFinite(parsedTs)) {
@@ -173,23 +193,27 @@ async function bootstrap() {
       }
 
       const tsMs = parsedTs > 1e12 ? parsedTs / 1000 : parsedTs;
-      market.ingestTick(price, volume, tsMs);
+      ctx.market.ingestTick(price, volume, tsMs);
       if (paper) {
-        paper.onTick(price);
+        paper.onTick(price, ctx.productId, ctx.symbol);
+        logPaperPosition(ctx, price);
       }
-      if (!bootstrapped) return;
-      const closed = market.lastClosed("1m");
-      if (!closed || closed.timestamp === lastClosed1m) return;
-      lastClosed1m = closed.timestamp;
-      void onNew1mClose();
+
+      const closed = ctx.market.lastClosed("1m");
+      if (!closed || closed.timestamp === ctx.lastClosed1m) return;
+      ctx.lastClosed1m = closed.timestamp;
+      void onNew1mClose(ctx);
     },
     () => {
       console.error("KILL SWITCH TRIGGERED");
       process.exit(1);
     },
     () => {
-      console.info("[ARES.MARKET] WS connected; subscribing to ticker");
-      ws?.subscribe("v2/ticker", [symbol]);
+      const symbolsForWs = Array.from(symbolContexts.keys());
+      console.info(
+        `[ARES.MARKET] WS connected; subscribing to ticker (${symbolsForWs.join(",")})`
+      );
+      ws?.subscribe("v2/ticker", symbolsForWs);
     },
     {
       auth: env.TRADING_MODE === "live",
@@ -224,64 +248,6 @@ bootstrap().catch((e) => {
   process.exit(1);
 });
 
-function matchWsSymbol(symbol?: string) {
-  if (!symbol || !wsSymbol) return true;
-  return symbol.toUpperCase() === wsSymbol.toUpperCase();
-}
-
-function normalizeOrderUpdates(msg: any): any[] {
-  if (Array.isArray(msg?.result)) return msg.result;
-  if (Array.isArray(msg?.orders)) return msg.orders;
-  return [msg];
-}
-
-function resolveOrderStatus(order: any): string | undefined {
-  const state = order?.state ?? order?.order_state;
-  if (typeof state === "string") {
-    if (state === "filled") return "closed";
-    return state;
-  }
-  if (order?.action === "delete") return "closed";
-  if (order?.reason === "fill" && order?.unfilled_size === 0) return "closed";
-  if (order?.unfilled_size === 0 && order?.filled_size != null) return "closed";
-  return undefined;
-}
-
-function handleOrderUpdate(msg: any) {
-  const updates = normalizeOrderUpdates(msg);
-  for (const order of updates) {
-    const symbol = order?.product_symbol ?? order?.symbol;
-    if (!matchWsSymbol(symbol)) continue;
-    const orderId = order?.id ?? order?.order_id;
-    if (orderId == null) continue;
-    const status = resolveOrderStatus(order);
-    if (status === "closed") {
-      void ocoManager.onOrderUpdate(String(orderId), status);
-    }
-  }
-}
-
-function normalizePositions(msg: any): any[] {
-  if (Array.isArray(msg?.result)) return msg.result;
-  if (Array.isArray(msg?.positions)) return msg.positions;
-  return [msg];
-}
-
-function handlePositionUpdate(msg: any) {
-  const updates = normalizePositions(msg);
-  for (const pos of updates) {
-    const symbol = pos?.product_symbol ?? pos?.symbol;
-    if (!matchWsSymbol(symbol)) continue;
-    livePosition = pos;
-    const size = Number(pos?.size ?? 0);
-    if (!Number.isFinite(size)) continue;
-    const entry = pos?.entry_price ?? pos?.avg_price ?? pos?.mark_price;
-    console.info(
-      `[ARES.MARKET] Position update ${symbol} size=${size} entry=${entry ?? "?"}`
-    );
-  }
-}
-
 function resolveMinLotSize(product: any): number | undefined {
   const raw =
     product?.min_size ??
@@ -299,6 +265,16 @@ function resolveSession(): "ASIA" | "EU" | "US" {
   if (hour >= 0 && hour < 7) return "ASIA";
   if (hour >= 7 && hour < 13) return "EU";
   return "US";
+}
+
+function countOpenTradesBySymbol(symbol: string): number {
+  const key = symbol.toUpperCase();
+  if (env.TRADING_MODE === "paper") {
+    return positions.all().filter((pos) => pos.productSymbol?.toUpperCase() === key).length;
+  }
+  const pos = livePositions.get(key);
+  const size = Number(pos?.size ?? 0);
+  return Number.isFinite(size) && size !== 0 ? 1 : 0;
 }
 
 async function getRiskContext(symbol: string): Promise<RiskContext> {
@@ -328,29 +304,36 @@ async function getRiskContext(symbol: string): Promise<RiskContext> {
     }
   }
 
+  const openTradesBySymbol: Record<string, number> = {};
+  for (const key of symbolContexts.keys()) {
+    openTradesBySymbol[key] = countOpenTradesBySymbol(key);
+  }
+  const openTrades = Object.values(openTradesBySymbol).reduce((sum, val) => sum + val, 0);
+
   return {
     balance,
     dailyPnl: 0,
-    openTrades: 0,
+    openTrades,
+    openTradesBySymbol,
   };
 }
 
-async function onNew1mClose() {
-  if (running) return;
-  running = true;
+async function onNew1mClose(ctx: SymbolContext) {
+  if (ctx.running) return;
+  ctx.running = true;
   try {
-    await Promise.all([indicators.update("5m"), indicators.update("15m")]);
+    await Promise.all([ctx.indicators.update("5m"), ctx.indicators.update("15m")]);
 
-    const signal = await runStrategy(market, indicators);
+    const signal = await runStrategy(ctx.market, ctx.indicators);
     if (!signal) return;
 
-    const last5m = market.lastClosed("5m");
+    const last5m = ctx.market.lastClosed("5m");
     if (!last5m) {
       console.warn("[ARES.STRATEGY] Missing 5m close for execution");
       return;
     }
 
-    const ind5m = indicators.snapshot("5m");
+    const ind5m = ctx.indicators.snapshot("5m");
     if (!ind5m.atr14) {
       console.warn("[ARES.STRATEGY] Missing 5m ATR for execution");
       return;
@@ -366,20 +349,20 @@ async function onNew1mClose() {
       RISK_CONFIG.minRR
     );
 
-    const minLotSize = resolveMinLotSize(cachedProduct) ?? 1;
-    if (!resolveMinLotSize(cachedProduct) && env.TRADING_MODE === "live") {
+    const minLotSize = resolveMinLotSize(ctx.cachedProduct) ?? 1;
+    if (!resolveMinLotSize(ctx.cachedProduct) && env.TRADING_MODE === "live") {
       console.warn("[ARES.RISK] Missing min lot size; blocking live execution");
       return;
     }
 
-    const ctx = await getRiskContext(env.DELTA_PRODUCT_SYMBOL ?? SYMBOLS.BTC_USDT.symbol);
-    if (ctx.balance <= 0) {
+    const ctxRisk = await getRiskContext(ctx.symbol);
+    if (ctxRisk.balance <= 0) {
       console.warn("[ARES.RISK] Balance unavailable or zero; blocking execution");
       return;
     }
 
-    const risk = evaluateRisk(ctx, {
-      symbol: env.DELTA_PRODUCT_SYMBOL ?? SYMBOLS.BTC_USDT.symbol,
+    const risk = evaluateRisk(ctxRisk, {
+      symbol: ctx.symbol,
       entryPrice,
       stopPrice,
       side: signal.side,
@@ -387,22 +370,22 @@ async function onNew1mClose() {
     });
     if (!risk.allowed) return;
 
-    const bias = computeHTFBias(market, indicators);
-    const ind15m = indicators.snapshot("15m");
+    const bias = computeHTFBias(ctx.market, ctx.indicators);
+    const ind15m = ctx.indicators.snapshot("15m");
     const aiInput = {
-      symbol: env.DELTA_PRODUCT_SYMBOL ?? SYMBOLS.BTC_USDT.symbol,
+      symbol: ctx.symbol,
       side: signal.side,
       timeframeBias: {
         htf: bias === "LONG" ? "BULL" : bias === "SHORT" ? "BEAR" : "RANGE",
         rsi: ind15m.rsi14 ?? 50,
         emaSlope:
-          market.candles("15m").length >= 2 &&
-          market.candles("15m").at(-1)!.close >
-            market.candles("15m").at(-2)!.close
+          ctx.market.candles("15m").length >= 2 &&
+          ctx.market.candles("15m").at(-1)!.close >
+            ctx.market.candles("15m").at(-2)!.close
             ? "UP"
-            : market.candles("15m").length >= 2 &&
-                market.candles("15m").at(-1)!.close <
-                  market.candles("15m").at(-2)!.close
+            : ctx.market.candles("15m").length >= 2 &&
+                ctx.market.candles("15m").at(-1)!.close <
+                  ctx.market.candles("15m").at(-2)!.close
               ? "DOWN"
               : "FLAT",
       },
@@ -440,16 +423,117 @@ async function onNew1mClose() {
     }
 
     await orderManager.execute({
-      symbol: env.DELTA_PRODUCT_SYMBOL ?? SYMBOLS.BTC_USDT.symbol,
+      symbol: ctx.symbol,
       side: signal.side,
       entryPrice,
       stopPrice,
       targetPrice,
       qty: risk.qty,
+      useMarketEntry: env.TRADING_MODE === "paper" && env.PAPER_MARKET_ENTRY,
     });
   } catch (error) {
     console.error("[ARES.STRATEGY] Cycle failure", error);
   } finally {
-    running = false;
+    ctx.running = false;
   }
+}
+
+function normalizeOrderUpdates(msg: any): any[] {
+  if (Array.isArray(msg?.result)) return msg.result;
+  if (Array.isArray(msg?.orders)) return msg.orders;
+  return [msg];
+}
+
+function resolveOrderStatus(order: any): string | undefined {
+  const state = order?.state ?? order?.order_state;
+  if (typeof state === "string") {
+    if (state === "filled") return "closed";
+    return state;
+  }
+  if (order?.action === "delete") return "closed";
+  if (order?.reason === "fill" && order?.unfilled_size === 0) return "closed";
+  if (order?.unfilled_size === 0 && order?.filled_size != null) return "closed";
+  return undefined;
+}
+
+function handleOrderUpdate(msg: any) {
+  const updates = normalizeOrderUpdates(msg);
+  for (const order of updates) {
+    const symbol = order?.product_symbol ?? order?.symbol;
+    if (symbol == null) continue;
+    if (!symbolContexts.has(String(symbol).toUpperCase())) continue;
+    const orderId = order?.id ?? order?.order_id;
+    if (orderId == null) continue;
+    const status = resolveOrderStatus(order);
+    if (status === "closed") {
+      void ocoManager.onOrderUpdate(String(orderId), status);
+    }
+  }
+}
+
+function normalizePositions(msg: any): any[] {
+  if (Array.isArray(msg?.result)) return msg.result;
+  if (Array.isArray(msg?.positions)) return msg.positions;
+  return [msg];
+}
+
+function handlePositionUpdate(msg: any) {
+  const updates = normalizePositions(msg);
+  for (const pos of updates) {
+    const symbol = pos?.product_symbol ?? pos?.symbol;
+    if (symbol == null) continue;
+    const key = String(symbol).toUpperCase();
+    if (!symbolContexts.has(key)) continue;
+    const size = Number(pos?.size ?? 0);
+    if (Number.isFinite(size) && size !== 0) {
+      livePositions.set(key, pos);
+    } else {
+      livePositions.delete(key);
+    }
+    const entry = pos?.entry_price ?? pos?.avg_price ?? pos?.mark_price;
+    console.info(
+      `[ARES.MARKET] Position update ${symbol} size=${size} entry=${entry ?? "?"}`
+    );
+  }
+}
+
+function logPaperPosition(ctx: SymbolContext, price: number) {
+  if (env.TRADING_MODE !== "paper") return;
+  if (!positions.isOpen) return;
+  const now = Date.now();
+  if (now - lastPaperLogAt < 1000) return;
+  lastPaperLogAt = now;
+
+  const pos = positions.getByProduct(ctx.productId, ctx.symbol);
+  if (!pos) return;
+  const qty = pos.qty;
+  const entry = pos.entryPrice;
+  const contractValueRaw = ctx.cachedProduct?.contract_value;
+  const contractValue =
+    typeof contractValueRaw === "string"
+      ? Number(contractValueRaw)
+      : typeof contractValueRaw === "number"
+        ? contractValueRaw
+        : 1;
+  const currency =
+    typeof ctx.cachedProduct?.settling_asset?.symbol === "string"
+      ? ctx.cachedProduct.settling_asset.symbol
+      : "QUOTE";
+  const pnl =
+    pos.side === "LONG"
+      ? (price - entry) * qty * contractValue
+      : (entry - price) * qty * contractValue;
+  const maxLev = resolveMaxLeverage(ctx.symbol);
+  const margin = (entry * qty * contractValue) / maxLev;
+  const pnlPct = margin > 0 ? (pnl / margin) * 100 : 0;
+  const priceChangePct = entry > 0 ? ((price - entry) / entry) * 100 : 0;
+
+  console.log(
+    `[ARES.PAPER] Position ${ctx.symbol} ${pos.side} qty=${qty} entry=${entry.toFixed(
+      2
+    )} price=${price.toFixed(2)} ` +
+      `pnl=${pnl.toFixed(2)} ${currency} ` +
+      `priceChange=${priceChangePct.toFixed(2)}% ` +
+      `pnlPct=${pnlPct.toFixed(2)}%`
+  );
 }

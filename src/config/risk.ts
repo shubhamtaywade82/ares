@@ -1,14 +1,15 @@
 export const RISK_CONFIG = {
-  riskPerTradePct: 0.003,
+  riskPerTradePct: 0.01,
   maxDailyLossPct: 0.02,
-  maxOpenTrades: 1,
+  maxOpenTradesTotal: 4,
+  maxOpenTradesPerSymbol: 1,
   minRR: 1.5,
   defaultMaxLeverage: 5,
   maxLeverageBySymbol: {
     BTCUSD: 10,
     ETHUSD: 8,
     XRPUSD: 5,
-    SOLUSD: 6,
+    SOLUSD: 5,
   } as Record<string, number>,
 };
 

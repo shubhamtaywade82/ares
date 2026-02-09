@@ -8,7 +8,7 @@ export function evaluateRisk(
   ctx: RiskContext,
   trade: TradeRiskInput
 ): { allowed: true; qty: number } | { allowed: false; reason: string } {
-  const exposureFail = checkExposure(ctx);
+  const exposureFail = checkExposure(ctx, trade.symbol);
   if (exposureFail) {
     console.warn(`[ARES.RISK] Blocked by exposure guard: ${exposureFail}`);
     return { allowed: false, reason: exposureFail };
