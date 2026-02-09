@@ -38,6 +38,14 @@ const EnvSchema = z.object({
       z.coerce.boolean().optional()
     )
     .default(false),
+  PAPER_SIDE: z
+    .string()
+    .transform((value) => value.toLowerCase())
+    .optional()
+    .refine((value) => value === undefined || value === "buy" || value === "sell", {
+      message: "PAPER_SIDE must be 'buy' or 'sell'",
+    })
+    .default("buy"),
   PAPER_BYPASS_SCORE: z
     .preprocess(
       (value) =>

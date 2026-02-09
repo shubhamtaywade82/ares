@@ -56,7 +56,9 @@ export class PaperTrader {
   private pnl: PnlTracker;
   private lastLogAt = 0;
   private entryOrder?: PaperOrder;
-  private done = false;
+  private resolveRun?: () => void;
+  private rejectRun?: (error?: Error) => void;
+  private finished = false;
   private contractValue = 1;
 
   constructor(private config: PaperTradeConfig) {
@@ -146,12 +148,9 @@ export class PaperTrader {
     console.log("[ARES.PAPER] Press Ctrl+C to stop\n");
 
     this.startWs(product.symbol, product.id, stopLoss, takeProfit);
-
-    process.on("SIGINT", () => {
-      if (this.done) return;
-      console.log("\n[ARES.PAPER] Stopping monitoring...");
-      this.done = true;
-      process.exit(0);
+    return new Promise<void>((resolve, reject) => {
+      this.resolveRun = resolve;
+      this.rejectRun = reject;
     });
   }
 
@@ -270,7 +269,7 @@ export class PaperTrader {
   ) {
     this.ws = new DeltaWsClient(
       (msg: { type?: string; price?: number | string; timestamp?: number }) => {
-        if (this.done) return;
+        if (this.finished) return;
         const msgType = msg.type;
         const isTicker = msgType === "ticker" || msgType === "v2/ticker";
         if (!isTicker) return;
@@ -288,7 +287,7 @@ export class PaperTrader {
       },
       () => {
         console.error("[ARES.PAPER] WS fatal; exiting");
-        process.exit(1);
+        this.finishRun("WS connection failed", new Error("WS failure"));
       },
       () => {
         console.info("[ARES.PAPER] WS connected; subscribing to ticker");
@@ -315,7 +314,7 @@ export class PaperTrader {
     const position = this.positions.getByProduct(productId, symbol);
 
     if (!position) {
-      if (this.entryOrder && !this.done) {
+      if (this.entryOrder && !this.finished) {
         console.log("[ARES.PAPER] Waiting for entry fill...");
       }
       return;
@@ -361,8 +360,7 @@ export class PaperTrader {
       `Final PnL: ₹${this.pnl.value.toFixed(2)} (${localPosition.pnlPercent.toFixed(2)}%)`
     );
 
-    this.done = true;
-    process.exit(0);
+    this.finishRun(exitCheck.reason);
   }
 
   private displayPosition(position: LocalPosition): void {
@@ -405,5 +403,25 @@ export class PaperTrader {
       return Number(price.toFixed(1));
     }
     return Math.round(price / tick) * tick;
+  }
+
+  stop(reason?: string) {
+    this.finishRun(reason ?? "Stopped");
+  }
+
+  private finishRun(reason?: string, error?: Error) {
+    if (this.finished) return;
+    this.finished = true;
+    if (reason) {
+      console.log(`[ARES.PAPER] Flow ended: ${reason}`);
+    }
+    this.ws?.disconnect();
+    if (error) {
+      this.rejectRun?.(error);
+    } else {
+      this.resolveRun?.();
+    }
+    this.resolveRun = undefined;
+    this.rejectRun = undefined;
   }
 }

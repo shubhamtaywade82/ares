@@ -60,6 +60,11 @@ export class DeltaWsClient {
     this.ws.send(JSON.stringify(payload));
   }
 
+  disconnect() {
+    if (!this.ws) return;
+    this.ws.close();
+  }
+
   isAuthenticated(): boolean {
     return this.authenticated;
   }

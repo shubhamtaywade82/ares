@@ -72,3 +72,5 @@ Thumbs.db
 # Docker (if added later)
 ####################################
 docker-data/
+
+.devagent/**
