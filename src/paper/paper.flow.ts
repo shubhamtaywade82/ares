@@ -50,7 +50,8 @@ async function run(): Promise<void> {
 
   const runs = list.map(async (cfg) => {
     const trader = new PaperTrader({
-      ...cfg,
+      productSymbol: cfg.symbol,
+      side: cfg.side,
       productId: env.DELTA_PRODUCT_ID,
       capital,
       leverage: resolveMaxLeverage(cfg.symbol),
