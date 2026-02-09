@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { env } from "../config/env.js";
-import { PaperTrader, PaperTradeConfig } from "./paper.trader.js";
+import { PaperTrader } from "./paper.trader.js";
+import { LiveTrader } from "./live.trader.js";
 import { SYMBOLS } from "../market/symbol.registry.js";
 import { resolveMaxLeverage } from "../config/risk.js";
 import { DeltaRestClient } from "../delta/rest.client.js";
@@ -32,17 +33,19 @@ function normalizeSymbols(): SymbolConfig[] {
 
 function isSymbolEligible(symbol: string, capital: number): boolean {
   const upper = symbol.toUpperCase();
-  if (upper.startsWith("BTC") && capital < BTC_MIN_CAPITAL) {
+  if (upper.startsWith("BTC") && capital < BTC_MIN_CAPITAL && env.TRADING_MODE === "paper") {
     console.log(
-      `[ARES.PAPER] Skipping ${upper} — capital ₹${capital} < BTC min ₹${BTC_MIN_CAPITAL}`
+      `[ARES.${MODE_TAG}] Skipping ${upper} — capital ₹${capital} < BTC min ₹${BTC_MIN_CAPITAL}`
     );
     return false;
   }
   return true;
 }
 
+const MODE_TAG = env.TRADING_MODE === "live" ? "LIVE" : "PAPER";
+
 async function determineSide(symbol: string): Promise<"buy" | "sell" | null> {
-  console.log(`\n[ARES.PAPER] Resolving strategy direction for ${symbol}...`);
+  console.log(`\n[ARES.${MODE_TAG}] Resolving strategy direction for ${symbol}...`);
 
   const rest = new DeltaRestClient();
   const market = new MarketCache();
@@ -55,23 +58,25 @@ async function determineSide(symbol: string): Promise<"buy" | "sell" | null> {
   const signal = await runStrategy(market, indicators);
   if (!signal) {
     console.warn(
-      `[ARES.PAPER] No strategy setup detected for ${symbol}; skipping paper trade`
+      `[ARES.${MODE_TAG}] No strategy setup detected for ${symbol}; skipping trade`
     );
     return null;
   }
 
   const side: "buy" | "sell" = signal.side === "LONG" ? "buy" : "sell";
   console.log(
-    `[ARES.PAPER] Strategy selected side=${signal.side} → order side=${side.toUpperCase()}`
+    `[ARES.${MODE_TAG}] Strategy selected side=${signal.side} → order side=${side.toUpperCase()}`
   );
 
   return side;
 }
 
 async function run(): Promise<void> {
-  const capital = env.PAPER_BALANCE ?? 0;
-  if (capital <= 0) {
-    console.warn("[ARES.PAPER] PAPER_BALANCE is not set or zero; sizing will be minimal");
+  const isLive = env.TRADING_MODE === "live";
+  const capital = isLive ? 0 : (env.PAPER_BALANCE ?? 0);
+
+  if (!isLive && capital <= 0) {
+    console.warn(`[ARES.${MODE_TAG}] PAPER_BALANCE is not set or zero; sizing will be minimal`);
   }
 
   let shouldStop = false;
@@ -79,18 +84,18 @@ async function run(): Promise<void> {
   const configured = normalizeSymbols();
   const list = configured.filter((cfg) => isSymbolEligible(cfg.symbol, capital));
   if (list.length === 0) {
-    console.warn("[ARES.PAPER] No symbols configured for paper flow");
+    console.warn(`[ARES.${MODE_TAG}] No symbols configured for trading flow`);
     return;
   }
 
   console.log("=".repeat(60));
-  console.log("[ARES.PAPER] Running multi-symbol flow");
+  console.log(`[ARES.${MODE_TAG}] Running multi-symbol ${env.TRADING_MODE} flow`);
   console.log("=".repeat(60));
-  console.log(`[ARES.PAPER] Symbols: ${list.map((cfg) => cfg.symbol).join(",")} `);
+  console.log(`[ARES.${MODE_TAG}] Symbols: ${list.map((cfg) => cfg.symbol).join(",")} `);
 
-  const traders: PaperTrader[] = [];
+  const traders: (PaperTrader | LiveTrader)[] = [];
   process.on("SIGINT", () => {
-    console.log("[ARES.PAPER] Interrupt received; stopping all flows");
+    console.log(`[ARES.${MODE_TAG}] Interrupt received; stopping all flows`);
     shouldStop = true;
     traders.forEach((trader) => trader.stop("Interrupted by user"));
   });
@@ -100,7 +105,7 @@ async function run(): Promise<void> {
 
   while (!shouldStop) {
     cycle += 1;
-    console.log(`\n[ARES.PAPER] === Scan cycle ${cycle} starting ===`);
+    console.log(`\n[ARES.${MODE_TAG}] === Scan cycle ${cycle} starting ===`);
 
     for (const cfg of list) {
       if (shouldStop) break;
@@ -110,39 +115,59 @@ async function run(): Promise<void> {
         continue;
       }
 
-      const trader = new PaperTrader({
-        productSymbol: cfg.symbol,
-        side,
-        productId: env.DELTA_PRODUCT_ID,
-        capital,
-        leverage: resolveMaxLeverage(cfg.symbol),
-        profitTargetPercent: 2,
-        stopLossPercent: 1,
-        useMarketOrder: env.PAPER_MARKET_ENTRY,
-        logEveryMs: 1000,
-      });
-
-      traders.push(trader);
-      try {
-        await trader.run();
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        console.error(`[ARES.PAPER] Paper run failed for ${cfg.symbol}: ${reason}`);
+      if (isLive) {
+        const trader = new LiveTrader({
+          productSymbol: cfg.symbol,
+          side,
+          productId: env.DELTA_PRODUCT_ID,
+          capital: 0,
+          leverage: resolveMaxLeverage(cfg.symbol),
+          profitTargetPercent: 2,
+          stopLossPercent: 1,
+          useMarketOrder: env.PAPER_MARKET_ENTRY,
+          logEveryMs: 1000,
+        });
+        traders.push(trader);
+        try {
+          await trader.run();
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          console.error(`[ARES.${MODE_TAG}] Live run failed for ${cfg.symbol}: ${reason}`);
+        }
+      } else {
+        const trader = new PaperTrader({
+          productSymbol: cfg.symbol,
+          side,
+          productId: env.DELTA_PRODUCT_ID,
+          capital,
+          leverage: resolveMaxLeverage(cfg.symbol),
+          profitTargetPercent: 2,
+          stopLossPercent: 1,
+          useMarketOrder: env.PAPER_MARKET_ENTRY,
+          logEveryMs: 1000,
+        });
+        traders.push(trader);
+        try {
+          await trader.run();
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          console.error(`[ARES.${MODE_TAG}] Paper run failed for ${cfg.symbol}: ${reason}`);
+        }
       }
     }
 
     if (shouldStop) break;
 
     console.log(
-      `[ARES.PAPER] === Scan cycle ${cycle} complete; sleeping ${scanIntervalMs / 1000}s ===`
+      `[ARES.${MODE_TAG}] === Scan cycle ${cycle} complete; sleeping ${scanIntervalMs / 1000}s ===`
     );
     await new Promise((resolve) => setTimeout(resolve, scanIntervalMs));
   }
 
-  console.log("[ARES.PAPER] Paper loop stopped");
+  console.log(`[ARES.${MODE_TAG}] Trading loop stopped`);
 }
 
 run().catch((error) => {
-  console.error("[ARES.PAPER] Flow failed", error);
+  console.error(`[ARES.${MODE_TAG}] Flow failed`, error);
   process.exit(1);
 });
