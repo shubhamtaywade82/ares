@@ -6,6 +6,7 @@ type Timeframe = "1m" | "5m" | "15m";
 
 export class MarketCache {
   private builders: Map<Timeframe, CandleBuilder> = new Map();
+  private latestPrice = 0;
 
   constructor() {
     this.builders.set("1m", new CandleBuilder(1));
@@ -33,9 +34,14 @@ export class MarketCache {
   }
 
   ingestTick(price: number, volume: number, timestamp: number) {
+    this.latestPrice = price;
     for (const builder of this.builders.values()) {
       builder.ingestTick(price, volume, timestamp);
     }
+  }
+
+  lastPrice(): number {
+    return this.latestPrice;
   }
 
   candles(tf: Timeframe): readonly DeltaCandle[] {

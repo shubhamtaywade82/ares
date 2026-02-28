@@ -40,7 +40,7 @@ type SymbolContext = {
   productId?: number;
   market: MarketCache;
   indicators: IndicatorCache;
-  lastClosed1m: number;
+  lastClosed5m: number;
   running: boolean;
   cachedProduct?: any;
   structure: StructureAnalyzer;
@@ -160,7 +160,7 @@ async function bootstrap() {
       indicators,
       structure: new StructureAnalyzer(),
       smc: new SmcAnalyzer(),
-      lastClosed1m: 0,
+      lastClosed5m: 0,
       running: false,
       ...(productId !== undefined ? { productId } : {}),
     };
@@ -242,10 +242,10 @@ async function bootstrap() {
         logPaperPosition(ctx, price);
       }
 
-      const closed = ctx.market.lastClosed("1m");
-      if (!closed || closed.timestamp === ctx.lastClosed1m) return;
-      ctx.lastClosed1m = closed.timestamp;
-      void onNew1mClose(ctx);
+      const closed5m = ctx.market.lastClosed("5m");
+      if (!closed5m || closed5m.timestamp === ctx.lastClosed5m) return;
+      ctx.lastClosed5m = closed5m.timestamp;
+      void onNew5mClose(ctx);
     },
     () => {
       logger.error("KILL SWITCH TRIGGERED");
@@ -376,7 +376,7 @@ async function getRiskContext(symbol: string): Promise<RiskContext> {
   };
 }
 
-async function onNew1mClose(ctx: SymbolContext) {
+async function onNew5mClose(ctx: SymbolContext) {
   if (ctx.running) return;
   ctx.running = true;
   try {
@@ -426,7 +426,7 @@ async function onNew1mClose(ctx: SymbolContext) {
       return;
     }
 
-    const entryPrice = last5m.close;
+    const entryPrice = ctx.market.lastPrice();
     const stopPrice =
       signal.side === "LONG" ? entryPrice - ind5m.atr14 : entryPrice + ind5m.atr14;
     const targetPrice = computeTargets(

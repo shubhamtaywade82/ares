@@ -32,12 +32,12 @@ export function computeHTFBias(
 
   if (ind.ema200 === undefined || ind.rsi14 === undefined) return "NONE";
 
-  const priceAboveEma = last.close >= ind.ema200;
-  const distanceFromEma = Math.abs(last.close - ind.ema200) / ind.ema200;
+  const ema200Gap = (last.close - ind.ema200) / ind.ema200;
 
-  if (distanceFromEma < 0.002 && ind.rsi14 >= 48 && ind.rsi14 <= 52) return "NONE";
+  // Symmetric AND logic: trending price + RSI confirmation
+  if (ema200Gap > 0.003 && ind.rsi14 >= 53) return "LONG";
+  if (ema200Gap < -0.003 && ind.rsi14 <= 47) return "SHORT";
 
-  if (priceAboveEma || ind.rsi14 >= 50) return "LONG";
-
-  return "SHORT";
+  // Neutral band or conflicting signals
+  return "NONE";
 }

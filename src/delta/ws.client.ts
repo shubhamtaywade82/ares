@@ -18,7 +18,7 @@ const BASE_RECONNECT_DELAY_MS = 500;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 
 export class DeltaWsClient {
-  private ws?: WebSocket;
+  private ws?: WebSocket | undefined;
   private heartbeat?: NodeJS.Timeout;
   private authenticated = false;
   private reconnectAttempts = 0;
@@ -59,9 +59,8 @@ export class DeltaWsClient {
     this.ws.on("close", () => {
       this.handleDisconnect("WS_DISCONNECT");
     });
-
-    this.ws.on("error", () => {
-      this.handleDisconnect("WS_ERROR");
+    this.ws.on("error", (err) => {
+      this.handleDisconnect(`WS_ERROR: ${err.message}`);
     });
   }
 
@@ -105,6 +104,13 @@ export class DeltaWsClient {
 
   private handleDisconnect(reason: string) {
     if (this.destroyed) return;
+
+    // Cleanup existing WS before reconnecting
+    if (this.ws) {
+      this.ws.removeAllListeners();
+      this.ws.terminate();
+      this.ws = undefined;
+    }
 
     clearInterval(this.heartbeat);
     delete this.heartbeat;
