@@ -355,6 +355,19 @@ export class PaperExecutor {
     this.cancelBracketOrders(productId, productSymbol);
   }
 
+  updateStopLoss(productId: number | undefined, productSymbol: string | undefined, stopPrice: number) {
+    const pos = this.positions.getByProduct(productId, productSymbol);
+    if (!pos) return;
+    this.positions.updateBrackets(productId, productSymbol, stopPrice, pos.targetPrice);
+    this.cancelBracketOrders(productId, productSymbol);
+    this.placeBracketOrder({
+      ...(productId !== undefined ? { product_id: productId } : {}),
+      ...(productSymbol !== undefined ? { product_symbol: productSymbol } : {}),
+      stop_loss_order: { stop_price: stopPrice },
+      ...(pos.targetPrice ? { take_profit_order: { limit_price: pos.targetPrice } } : {}),
+    });
+  }
+
   closeAllPositions(price?: number) {
     for (const pos of this.positions.all()) {
       this.closePosition(pos.productId, pos.productSymbol, price);

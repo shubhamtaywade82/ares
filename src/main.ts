@@ -25,6 +25,7 @@ import { OcoManager } from "./execution/oco.manager.js";
 import { StructureAnalyzer } from "./strategy/structure.js";
 import { SmcAnalyzer } from "./strategy/smc.js";
 import { savePaperState, loadPaperState } from "./state/persistence.js";
+import { managePosition } from "./strategy/management.js";
 
 type TickerMessage = {
   type?: string;
@@ -383,6 +384,32 @@ async function onNew1mClose(ctx: SymbolContext) {
 
     ctx.structure.update(ctx.market.candles("15m"));
     ctx.smc.update(ctx.market.candles("15m"), ctx.structure.lastBreaks);
+
+    // --- Active Position Management ---
+    const activePos = positions.getByProduct(ctx.productId, ctx.symbol);
+    const last1m = ctx.market.lastClosed("1m");
+    if (activePos && last1m) {
+      const action = managePosition(activePos, last1m.close, ctx.structure);
+      if (action) {
+        if (action.type === "CLOSE") {
+          logger.info(`[ARES.MANAGEMENT] Closing ${ctx.symbol}: ${action.reason}`);
+          if (env.TRADING_MODE === "paper" && paper) {
+            paper.closePosition(ctx.productId, ctx.symbol, last1m.close);
+          }
+          // Live trade exit logic could go here
+          return;
+        } else if (action.type === "UPDATE_SL" && action.newStop != null) {
+          logger.info(
+            `[ARES.MANAGEMENT] Updating SL for ${ctx.symbol} to ${action.newStop}: ${action.reason}`
+          );
+          if (env.TRADING_MODE === "paper" && paper) {
+            paper.updateStopLoss(ctx.productId, ctx.symbol, action.newStop);
+          }
+          // Live SL update logic could go here
+        }
+      }
+      return; // Skip setup detection if position is active
+    }
 
     const signal = await runStrategy(ctx.market, ctx.indicators, ctx.structure, ctx.smc);
     if (!signal) return;
