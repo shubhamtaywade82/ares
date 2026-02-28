@@ -1,5 +1,6 @@
 import { v4 as uuid } from "uuid";
 import { DeltaRestClient } from "../delta/rest.client.js";
+import { logger } from "../utils/logger.js";
 import { ExecutionRequest } from "./types.js";
 import { OrderStore } from "../state/order.store.js";
 import { KillSwitch } from "../risk/kill.switch.js";
@@ -32,13 +33,14 @@ export class OrderManager {
 
     if (this.mode === "paper") {
       if (!this.paper) {
-        console.warn("[ARES.PAPER] Paper executor not configured");
+        logger.warn("[ARES.PAPER] Paper executor not configured");
         return set;
       }
 
       const useMarket = req.useMarketEntry === true;
       const entry = useMarket
         ? this.paper.placeOrder({
+            ...(req.productId !== undefined ? { product_id: req.productId } : {}),
             product_symbol: req.symbol,
             size: req.qty,
             side: req.side === "LONG" ? "buy" : "sell",
@@ -50,6 +52,7 @@ export class OrderManager {
             req.entryPrice,
             req.qty,
             {
+              ...(req.productId !== undefined ? { productId: req.productId } : {}),
               productSymbol: req.symbol,
               clientOrderId,
               role: "entry",
@@ -64,11 +67,11 @@ export class OrderManager {
         qty: req.qty,
         clientOrderId,
       });
-      console.log("[ARES.PAPER] Entry submitted", req);
+      logger.info(req, "[ARES.PAPER] Entry submitted");
       return set;
     }
 
-    console.info(
+    logger.info(
       `[ARES.EXECUTION] Submitting entry order ${req.symbol} ${req.side} qty=${req.qty}`
     );
     let entry;
@@ -76,8 +79,8 @@ export class OrderManager {
       entry = await this.rest.placeOrder({
         product_symbol: req.symbol,
         side: req.side === "LONG" ? "buy" : "sell",
-        type: "limit",
-        price: req.entryPrice,
+        order_type: "limit_order",
+        limit_price: String(req.entryPrice),
         size: req.qty,
         client_order_id: clientOrderId,
       });
@@ -99,14 +102,15 @@ export class OrderManager {
 
     let stop;
     try {
-      console.info(
+      logger.info(
         `[ARES.EXECUTION] Submitting stop order ${req.symbol} ${req.side} qty=${req.qty}`
       );
       stop = await this.rest.placeOrder({
         product_symbol: req.symbol,
         side: req.side === "LONG" ? "sell" : "buy",
-        type: "stop_market",
-        stop_price: req.stopPrice,
+        order_type: "limit_order",
+        stop_order_type: "stop_loss_order",
+        stop_price: String(req.stopPrice),
         size: req.qty,
         reduce_only: true,
         client_order_id: `${clientOrderId}-SL`,
@@ -129,14 +133,14 @@ export class OrderManager {
 
     let tp;
     try {
-      console.info(
+      logger.info(
         `[ARES.EXECUTION] Submitting take-profit order ${req.symbol} ${req.side} qty=${req.qty}`
       );
       tp = await this.rest.placeOrder({
         product_symbol: req.symbol,
         side: req.side === "LONG" ? "sell" : "buy",
-        type: "limit",
-        price: req.targetPrice,
+        order_type: "limit_order",
+        limit_price: String(req.targetPrice),
         size: req.qty,
         reduce_only: true,
         client_order_id: `${clientOrderId}-TP`,
@@ -192,7 +196,7 @@ export class OrderManager {
     set.stopOrderId = stop.id;
     set.targetOrderId = tp.id;
     this.pendingPaperBrackets.delete(orderId);
-    console.log("[ARES.PAPER] Bracket orders submitted");
+    logger.info("[ARES.PAPER] Bracket orders submitted");
     this.paper.setPositionBrackets(
       undefined,
       pending.symbol,

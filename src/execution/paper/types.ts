@@ -3,14 +3,14 @@ export type PaperOrderState = "open" | "pending" | "closed" | "cancelled";
 
 export interface PaperOrder {
   id: string;
-  clientOrderId?: string;
-  productId?: number;
-  productSymbol?: string;
-  role?: "entry" | "stop" | "take_profit";
+  clientOrderId?: string | undefined;
+  productId?: number | undefined;
+  productSymbol?: string | undefined;
+  role?: "entry" | "stop" | "take_profit" | undefined;
   type: PaperOrderType;
   side: "buy" | "sell";
-  price?: number;
-  stopPrice?: number;
+  price?: number | undefined;
+  stopPrice?: number | undefined;
   qty: number;
   filledQty: number;
   status: PaperOrderState;

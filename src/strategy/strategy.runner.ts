@@ -5,6 +5,7 @@ import { detectLTFSetup } from "./setup.ltf.js";
 import { scoreSetup } from "./scorer.js";
 import { SetupSignal } from "./types.js";
 import { env } from "../config/env.js";
+import { logger } from "../utils/logger.js";
 
 export async function runStrategy(
   market: MarketCache,
@@ -12,33 +13,33 @@ export async function runStrategy(
 ): Promise<SetupSignal | null> {
   // Hard readiness checks
   if (!indicators.isReady("15m") || !indicators.isReady("5m")) {
-    console.info("[ARES.STRATEGY] Indicators not ready (5m/15m)");
+    logger.info("[ARES.STRATEGY] Indicators not ready (5m/15m)");
     return null;
   }
 
   const bias = computeHTFBias(market, indicators);
   if (bias === "NONE") {
-    console.info("[ARES.STRATEGY] HTF bias is NONE");
+    logger.info("[ARES.STRATEGY] HTF bias is NONE");
     return null;
   }
-  console.info(`[ARES.STRATEGY] HTF bias=${bias}`);
+  logger.info(`[ARES.STRATEGY] HTF bias=${bias}`);
 
   const setup = detectLTFSetup(bias, market, indicators);
   if (!setup) {
-    console.info("[ARES.STRATEGY] No LTF setup detected");
+    logger.info("[ARES.STRATEGY] No LTF setup detected");
     return null;
   }
 
   const scored = scoreSetup(setup, indicators.snapshot("15m"));
   if (!scored) {
     if (env.TRADING_MODE === "paper" && env.PAPER_BYPASS_SCORE) {
-      console.warn("[ARES.STRATEGY] Score below threshold; bypassing in paper");
+      logger.warn("[ARES.STRATEGY] Score below threshold; bypassing in paper");
       return setup;
     }
-    console.info("[ARES.STRATEGY] Setup score below threshold");
+    logger.info("[ARES.STRATEGY] Setup score below threshold");
     return null;
   }
-  console.info(`[ARES.STRATEGY] Setup scored=${scored.score}`);
+  logger.info(`[ARES.STRATEGY] Setup scored=${scored.score}`);
 
   return scored;
 }

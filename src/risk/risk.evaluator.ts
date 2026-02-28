@@ -20,9 +20,10 @@ export function evaluateRisk(
     return { allowed: false, reason: "POSITION_SIZE_TOO_SMALL" };
   }
 
-  const notional = size.qty * trade.entryPrice;
+  const notionalUSD = size.qty * trade.entryPrice * trade.contractValue;
+  const balanceUSD = ctx.balance * trade.inrToUsd;
   const maxLeverage = resolveMaxLeverage(trade.symbol);
-  const leverageFail = checkLeverage(notional, ctx.balance, maxLeverage);
+  const leverageFail = checkLeverage(notionalUSD, balanceUSD, maxLeverage);
   if (leverageFail) {
     console.warn(`[ARES.RISK] Blocked by leverage guard: ${leverageFail}`);
     return { allowed: false, reason: leverageFail };

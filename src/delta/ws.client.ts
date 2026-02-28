@@ -13,10 +13,17 @@ type WsClientOptions = {
   onAuth?: WsAuthHandler;
 };
 
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_RECONNECT_DELAY_MS = 500;
+const MAX_RECONNECT_DELAY_MS = 30_000;
+
 export class DeltaWsClient {
   private ws?: WebSocket;
   private heartbeat?: NodeJS.Timeout;
   private authenticated = false;
+  private reconnectAttempts = 0;
+  private reconnectTimer?: NodeJS.Timeout;
+  private destroyed = false;
 
   constructor(
     private onMessage: WsHandler,
@@ -26,9 +33,12 @@ export class DeltaWsClient {
   ) {}
 
   connect() {
+    if (this.destroyed) return;
+
     this.ws = new WebSocket(env.DELTA_WS_URL);
 
     this.ws.on("open", () => {
+      this.reconnectAttempts = 0;
       this.startHeartbeat();
       if (this.options.auth) {
         this.sendAuth();
@@ -47,11 +57,11 @@ export class DeltaWsClient {
     });
 
     this.ws.on("close", () => {
-      this.shutdown("WS_DISCONNECT");
+      this.handleDisconnect("WS_DISCONNECT");
     });
 
     this.ws.on("error", () => {
-      this.shutdown("WS_ERROR");
+      this.handleDisconnect("WS_ERROR");
     });
   }
 
@@ -61,8 +71,13 @@ export class DeltaWsClient {
   }
 
   disconnect() {
-    if (!this.ws) return;
-    this.ws.close();
+    this.destroyed = true;
+    clearInterval(this.heartbeat);
+    clearTimeout(this.reconnectTimer);
+    if (this.ws) {
+      this.ws.removeAllListeners();
+      this.ws.close();
+    }
   }
 
   isAuthenticated(): boolean {
@@ -88,6 +103,34 @@ export class DeltaWsClient {
     this.send(payload);
   }
 
+  private handleDisconnect(reason: string) {
+    if (this.destroyed) return;
+
+    clearInterval(this.heartbeat);
+    delete this.heartbeat;
+    this.authenticated = false;
+
+    this.reconnectAttempts += 1;
+
+    if (this.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+      console.error(`[ARES.WS] Exhausted ${MAX_RECONNECT_ATTEMPTS} reconnect attempts. Triggering kill switch.`);
+      KillSwitch.trigger(KillReason.WS_DISCONNECT, { reason });
+      return; // unreachable, but satisfies TypeScript
+    }
+
+    const delay = Math.min(
+      BASE_RECONNECT_DELAY_MS * 2 ** (this.reconnectAttempts - 1),
+      MAX_RECONNECT_DELAY_MS
+    );
+    console.warn(
+      `[ARES.WS] ${reason} — reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`
+    );
+
+    this.reconnectTimer = setTimeout(() => {
+      this.connect();
+    }, delay);
+  }
+
   private sendAuth() {
     const timestamp = Math.floor(Date.now() / 1000);
     const signature = DeltaSigner.sign("GET", "/live", timestamp);
@@ -105,12 +148,5 @@ export class DeltaWsClient {
     this.heartbeat = setInterval(() => {
       this.send({ type: "ping" });
     }, DELTA_CONFIG.wsHeartbeatMs);
-  }
-
-  private shutdown(reason: string) {
-    console.error("WS FATAL:", reason);
-    clearInterval(this.heartbeat);
-    KillSwitch.trigger(KillReason.WS_DISCONNECT, { reason });
-    this.onFatal(); // legacy hook (unreachable after KillSwitch)
   }
 }

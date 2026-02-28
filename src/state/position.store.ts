@@ -2,10 +2,10 @@ export interface Position {
   side: "LONG" | "SHORT";
   qty: number;
   entryPrice: number;
-  productId?: number;
-  productSymbol?: string;
-  stopPrice?: number;
-  targetPrice?: number;
+  productId?: number | undefined;
+  productSymbol?: string | undefined;
+  stopPrice?: number | undefined;
+  targetPrice?: number | undefined;
 }
 
 export class PositionStore {

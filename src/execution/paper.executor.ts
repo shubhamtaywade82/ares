@@ -13,43 +13,43 @@ type PaperOrderFilters = {
 };
 
 type PaperPlaceOrderRequest = {
-  product_id?: number;
-  product_symbol?: string;
-  limit_price?: number;
+  product_id?: number | undefined;
+  product_symbol?: string | undefined;
+  limit_price?: number | undefined;
   size: number;
   side: "buy" | "sell";
   order_type: PaperOrderType;
-  stop_price?: number;
-  client_order_id?: string;
-  reduce_only?: boolean;
+  stop_price?: number | undefined;
+  client_order_id?: string | undefined;
+  reduce_only?: boolean | undefined;
 };
 
 type PaperEditOrderRequest = {
-  id?: string;
-  client_order_id?: string;
-  product_id?: number;
-  product_symbol?: string;
-  limit_price?: number;
-  size?: number;
-  stop_price?: number;
+  id?: string | undefined;
+  client_order_id?: string | undefined;
+  product_id?: number | undefined;
+  product_symbol?: string | undefined;
+  limit_price?: number | undefined;
+  size?: number | undefined;
+  stop_price?: number | undefined;
 };
 
 type PaperBatchOrderRequest = {
-  product_id?: number;
-  product_symbol?: string;
+  product_id?: number | undefined;
+  product_symbol?: string | undefined;
   orders: PaperPlaceOrderRequest[];
 };
 
 type PaperBatchEditRequest = {
-  product_id?: number;
-  product_symbol?: string;
+  product_id?: number | undefined;
+  product_symbol?: string | undefined;
   orders: PaperEditOrderRequest[];
 };
 
 type PaperBatchCancelRequest = {
-  product_id?: number;
-  product_symbol?: string;
-  orders: { id?: string; client_order_id?: string }[];
+  product_id?: number | undefined;
+  product_symbol?: string | undefined;
+  orders: { id?: string | undefined; client_order_id?: string | undefined }[];
 };
 
 type PaperBracketRequest = {
@@ -72,11 +72,15 @@ export class PaperExecutor {
     onOrderUpdate?: OrderUpdateHandler,
     private rng: () => number = Math.random
   ) {
-    this.onOrderUpdate = onOrderUpdate;
+    if (onOrderUpdate) this.onOrderUpdate = onOrderUpdate;
   }
 
   setOnOrderUpdate(handler?: OrderUpdateHandler) {
-    this.onOrderUpdate = handler;
+    if (handler) {
+      this.onOrderUpdate = handler;
+    } else {
+      delete this.onOrderUpdate;
+    }
   }
 
   placeLimit(
@@ -91,9 +95,9 @@ export class PaperExecutor {
     }
   ): PaperOrder {
     return this.placeOrderInternal({
-      productId: meta?.productId,
-      productSymbol: meta?.productSymbol,
-      clientOrderId: meta?.clientOrderId,
+      ...(meta?.productId !== undefined ? { productId: meta.productId } : {}),
+      ...(meta?.productSymbol !== undefined ? { productSymbol: meta.productSymbol } : {}),
+      ...(meta?.clientOrderId !== undefined ? { clientOrderId: meta.clientOrderId } : {}),
       role: meta?.role,
       type: "limit",
       side,
@@ -115,9 +119,9 @@ export class PaperExecutor {
     }
   ): PaperOrder {
     return this.placeOrderInternal({
-      productId: meta?.productId,
-      productSymbol: meta?.productSymbol,
-      clientOrderId: meta?.clientOrderId,
+      ...(meta?.productId !== undefined ? { productId: meta.productId } : {}),
+      ...(meta?.productSymbol !== undefined ? { productSymbol: meta.productSymbol } : {}),
+      ...(meta?.clientOrderId !== undefined ? { clientOrderId: meta.clientOrderId } : {}),
       role: meta?.role,
       type: "stop_market",
       side,
@@ -129,9 +133,9 @@ export class PaperExecutor {
 
   placeOrder(req: PaperPlaceOrderRequest): PaperOrder {
     return this.placeOrderInternal({
-      productId: req.product_id,
-      productSymbol: req.product_symbol,
-      clientOrderId: req.client_order_id,
+      ...(req.product_id !== undefined ? { productId: req.product_id } : {}),
+      ...(req.product_symbol !== undefined ? { productSymbol: req.product_symbol } : {}),
+      ...(req.client_order_id !== undefined ? { clientOrderId: req.client_order_id } : {}),
       type: req.order_type,
       side: req.side,
       price: req.limit_price,
@@ -155,7 +159,7 @@ export class PaperExecutor {
     return order;
   }
 
-  cancelOrder(req: { id?: string; client_order_id?: string }): PaperOrder | undefined {
+  cancelOrder(req: { id?: string | undefined; client_order_id?: string | undefined }): PaperOrder | undefined {
     const order =
       (req.id ? this.orders.get(req.id) : undefined) ??
       (req.client_order_id
@@ -232,22 +236,25 @@ export class PaperExecutor {
       req.take_profit_order?.limit_price ?? req.take_profit_order?.stop_price;
     const stop = stopPrice
       ? this.placeStopMarket(side, stopPrice, pos.qty, {
-          productId: req.product_id,
-          productSymbol: req.product_symbol,
+          ...(pos.productId !== undefined ? { productId: pos.productId } : {}),
+          ...(pos.productSymbol !== undefined ? { productSymbol: pos.productSymbol } : {}),
           role: "stop",
         })
       : undefined;
     const takeProfit = tpPrice
       ? this.placeLimit(side, tpPrice, pos.qty, {
-          productId: req.product_id,
-          productSymbol: req.product_symbol,
+          ...(pos.productId !== undefined ? { productId: pos.productId } : {}),
+          ...(pos.productSymbol !== undefined ? { productSymbol: pos.productSymbol } : {}),
           role: "take_profit",
         })
       : undefined;
     if (stopPrice || tpPrice) {
       this.setPositionBrackets(req.product_id, req.product_symbol, stopPrice, tpPrice);
     }
-    return { stop, takeProfit };
+    return {
+      ...(stop !== undefined ? { stop } : {}),
+      ...(takeProfit !== undefined ? { takeProfit } : {}),
+    };
   }
 
   editBracketOrder(req: PaperBracketRequest): { stop?: PaperOrder; takeProfit?: PaperOrder } {
@@ -320,15 +327,16 @@ export class PaperExecutor {
     const fillPrice =
       price ?? this.lastPriceFor(productId, productSymbol) ?? pos.entryPrice;
     const contractValue = this.resolveContractValue(productId, productSymbol);
-    const fee = fillPrice * pos.qty * contractValue * PAPER_CONFIG.takerFeePct;
+    const baseFee = fillPrice * pos.qty * contractValue * PAPER_CONFIG.takerFeePct;
+    const fee = baseFee * (1 + PAPER_CONFIG.GST_RATE);
     const side = pos.side === "LONG" ? "sell" : "buy";
     this.applyFill(
       {
         side,
         price: fillPrice,
         qty: pos.qty,
-        productId,
-        productSymbol,
+        ...(productId !== undefined ? { productId } : {}),
+        ...(productSymbol !== undefined ? { productSymbol } : {}),
       },
       fee
     );
@@ -408,15 +416,16 @@ export class PaperExecutor {
       : PAPER_CONFIG.takerFeePct;
 
     const contractValue = this.resolveContractValue(order.productId, order.productSymbol);
-    const fee = fillPrice * fillQty * contractValue * feePct;
+    const baseFee = fillPrice * fillQty * contractValue * feePct;
+    const fee = baseFee * (1 + PAPER_CONFIG.GST_RATE);
 
     this.applyFill(
       {
         side: order.side,
         price: fillPrice,
         qty: fillQty,
-        productId: order.productId,
-        productSymbol: order.productSymbol,
+        ...(order.productId !== undefined ? { productId: order.productId } : {}),
+        ...(order.productSymbol !== undefined ? { productSymbol: order.productSymbol } : {}),
       },
       fee
     );
@@ -435,16 +444,19 @@ export class PaperExecutor {
       productId?: number;
       productSymbol?: string;
     },
-    fee: number
+    feeUSD: number
   ) {
+    const feeINR = feeUSD * PAPER_CONFIG.USDINR;
+    this.pnl.record(-feeINR); // Always deduct fee for every fill (Opening/Closing/Adding)
+
     const existing = this.positions.getByProduct(fill.productId, fill.productSymbol);
     if (!existing) {
       this.positions.open({
         side: fill.side === "buy" ? "LONG" : "SHORT",
         qty: fill.qty,
         entryPrice: fill.price,
-        productId: fill.productId,
-        productSymbol: fill.productSymbol,
+        ...(fill.productId !== undefined ? { productId: fill.productId } : {}),
+        ...(fill.productSymbol !== undefined ? { productSymbol: fill.productSymbol } : {}),
         stopPrice: undefined,
         targetPrice: undefined,
       });
@@ -465,12 +477,13 @@ export class PaperExecutor {
     }
 
     const closingQty = Math.min(pos.qty, fill.qty);
-    const pnl =
+    const pnlUSD =
       pos.side === "LONG"
         ? (fill.price - pos.entryPrice) * closingQty * contractValue
         : (pos.entryPrice - fill.price) * closingQty * contractValue;
 
-    this.pnl.record(pnl - fee);
+    const pnlINR = pnlUSD * PAPER_CONFIG.USDINR;
+    this.pnl.record(pnlINR); // Record closing PnL separately
 
     if (fill.qty < pos.qty) {
       pos.qty -= fill.qty;
@@ -487,8 +500,8 @@ export class PaperExecutor {
       side: fillSide,
       qty: remainingQty,
       entryPrice: fill.price,
-      productId: fill.productId,
-      productSymbol: fill.productSymbol,
+      ...(fill.productId !== undefined ? { productId: fill.productId } : {}),
+      ...(fill.productSymbol !== undefined ? { productSymbol: fill.productSymbol } : {}),
       stopPrice: undefined,
       targetPrice: undefined,
     });
@@ -502,15 +515,15 @@ export class PaperExecutor {
   }
 
   private placeOrderInternal(input: {
-    productId?: number;
-    productSymbol?: string;
-    clientOrderId?: string;
-    role?: PaperOrder["role"];
+    productId?: number | undefined;
+    productSymbol?: string | undefined;
+    clientOrderId?: string | undefined;
+    role?: PaperOrder["role"] | undefined;
     type: PaperOrderType;
     side: "buy" | "sell";
-    price?: number;
+    price?: number | undefined;
     qty: number;
-    stopPrice?: number;
+    stopPrice?: number | undefined;
   }): PaperOrder {
     const order: PaperOrder = {
       id: uuid(),
@@ -602,9 +615,9 @@ export class PaperExecutor {
   }
 
   private matchesPosition(
-    pos: { productId?: number; productSymbol?: string },
-    productId?: number,
-    productSymbol?: string
+    pos: { productId?: number | undefined; productSymbol?: string | undefined },
+    productId?: number | undefined,
+    productSymbol?: string | undefined
   ) {
     if (productId != null && pos.productId != null) {
       return pos.productId === productId;

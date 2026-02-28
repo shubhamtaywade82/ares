@@ -1,4 +1,5 @@
 import { DeltaRestClient } from "../delta/rest.client.js";
+import { logger } from "../utils/logger.js";
 import { MarketCache } from "./market.cache.js";
 
 export async function bootstrapMarket(
@@ -17,7 +18,7 @@ export async function bootstrapMarket(
     try {
       const start = end - lookbackSeconds;
       const startedAt = Date.now();
-      console.info(
+      logger.info(
         `[ARES.MARKET] Bootstrapping ${tf} from ${start} to ${end} (limit 200)...`
       );
       const result = await rest.getCandles(symbol, tf, start, end, 200, {
@@ -33,7 +34,7 @@ export async function bootstrapMarket(
       cache.bootstrap(tf, result.result);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      console.error(`[ARES.MARKET] Bootstrap failed for ${tf}: ${reason}`);
+      logger.error(`[ARES.MARKET] Bootstrap failed for ${tf}: ${reason}`);
       cache.bootstrap(tf, []);
     }
   }

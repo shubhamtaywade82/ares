@@ -2,7 +2,7 @@ import { AIVetoInput } from "./ai.types.js";
 
 export function buildAIPrompt(input: AIVetoInput) {
   return {
-    role: "system",
+    role: "user",
     content: `You are a professional crypto futures risk analyst.
 Your task is to decide whether to ALLOW or BLOCK a trade.
 

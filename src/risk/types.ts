@@ -11,6 +11,8 @@ export interface TradeRiskInput {
   stopPrice: number;
   side: "LONG" | "SHORT";
   minLotSize: number;
+  contractValue: number;
+  inrToUsd: number;
 }
 
 export interface PositionSizeResult {

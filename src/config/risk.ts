@@ -11,6 +11,8 @@ export const RISK_CONFIG = {
     XRPUSD: 5,
     SOLUSD: 5,
   } as Record<string, number>,
+  USDINR: 84.0,
+  GST_RATE: 0.18,
 };
 
 export function resolveMaxLeverage(symbol?: string): number {

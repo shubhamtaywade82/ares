@@ -53,6 +53,13 @@ export class CandleBuilder {
         close: price,
         volume,
       });
+
+      // Cap array to prevent memory leak on long paper sessions.
+      // 500 × 15m ≈ 5 days — well beyond EMA200 lookback given bootstrap history.
+      const MAX_CANDLES = 500;
+      if (this.candles.length > MAX_CANDLES) {
+        this.candles = this.candles.slice(-MAX_CANDLES);
+      }
     }
 
     // case 4: out-of-order tick -> ignore

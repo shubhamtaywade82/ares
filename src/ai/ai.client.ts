@@ -20,20 +20,27 @@ export class AIClient {
   constructor(options: AIClientOptions) {
     this.provider = options.provider;
     this.ollamaUrl = options.ollamaUrl ?? "http://localhost:11434/api/chat";
-    this.ollamaModel = options.ollamaModel ?? "llama3.1:8b";
+    this.ollamaModel = options.ollamaModel ?? "qwen3:latest";
     this.openaiModel = options.openaiModel ?? "gpt-4.1-mini";
     this.openaiApiKey = options.openaiApiKey ?? process.env.OPENAI_API_KEY;
   }
 
-  async analyze(prompt: { role: string; content: string }): Promise<string> {
+  async analyze(
+    prompt: { role: string; content: string },
+    timeoutMs = 30_000
+  ): Promise<string> {
     if (this.provider === "ollama") {
-      const res = await axios.post(this.ollamaUrl, {
-        model: this.ollamaModel,
-        messages: [prompt],
-        stream: false,
-        format: "json",
-        options: { temperature: 0 },
-      });
+      const res = await axios.post(
+        this.ollamaUrl,
+        {
+          model: this.ollamaModel,
+          messages: [prompt],
+          stream: false,
+          format: "json",
+          options: { temperature: 0 },
+        },
+        { timeout: timeoutMs }
+      );
       return res.data.message.content;
     }
 
@@ -49,6 +56,7 @@ export class AIClient {
         temperature: 0,
       },
       {
+        timeout: timeoutMs,
         headers: {
           Authorization: `Bearer ${this.openaiApiKey}`,
         },
