@@ -5,6 +5,7 @@ import { PositionStore } from "../state/position.store.js";
 import { PnlTracker } from "../state/pnl.tracker.js";
 
 type OrderUpdateHandler = (orderId: string, status: string) => void;
+export type PaperStateChangeHandler = () => void | Promise<void>;
 
 type PaperOrderFilters = {
   productIds?: number[];
@@ -65,14 +66,17 @@ export class PaperExecutor {
   private lastPrices = new Map<string, number>();
   private leverages = new Map<string, number>();
   private contractValues = new Map<string, number>();
+  private onStateChange?: PaperStateChangeHandler;
 
   constructor(
     private positions: PositionStore,
     private pnl: PnlTracker,
     onOrderUpdate?: OrderUpdateHandler,
+    onStateChange?: PaperStateChangeHandler,
     private rng: () => number = Math.random
   ) {
     if (onOrderUpdate) this.onOrderUpdate = onOrderUpdate;
+    if (onStateChange) this.onStateChange = onStateChange;
   }
 
   setOnOrderUpdate(handler?: OrderUpdateHandler) {
@@ -80,6 +84,14 @@ export class PaperExecutor {
       this.onOrderUpdate = handler;
     } else {
       delete this.onOrderUpdate;
+    }
+  }
+
+  setOnStateChange(handler?: PaperStateChangeHandler) {
+    if (handler) {
+      this.onStateChange = handler;
+    } else {
+      delete this.onStateChange;
     }
   }
 
@@ -446,65 +458,69 @@ export class PaperExecutor {
     },
     feeUSD: number
   ) {
-    const feeINR = feeUSD * PAPER_CONFIG.USDINR;
-    this.pnl.record(-feeINR); // Always deduct fee for every fill (Opening/Closing/Adding)
+    try {
+      const feeINR = feeUSD * PAPER_CONFIG.USDINR;
+      this.pnl.record(-feeINR); // Always deduct fee for every fill (Opening/Closing/Adding)
 
-    const existing = this.positions.getByProduct(fill.productId, fill.productSymbol);
-    if (!existing) {
+      const existing = this.positions.getByProduct(fill.productId, fill.productSymbol);
+      if (!existing) {
+        this.positions.open({
+          side: fill.side === "buy" ? "LONG" : "SHORT",
+          qty: fill.qty,
+          entryPrice: fill.price,
+          ...(fill.productId !== undefined ? { productId: fill.productId } : {}),
+          ...(fill.productSymbol !== undefined ? { productSymbol: fill.productSymbol } : {}),
+          stopPrice: undefined,
+          targetPrice: undefined,
+          cachedProduct: this.resolveCachedProduct(fill.productId, fill.productSymbol),
+        });
+        return;
+      }
+
+      const pos = existing;
+      const contractValue = this.resolveContractValue(fill.productId, fill.productSymbol);
+      const fillSide = fill.side === "buy" ? "LONG" : "SHORT";
+
+      if (fillSide === pos.side) {
+        const totalQty = pos.qty + fill.qty;
+        const weightedEntry = (pos.entryPrice * pos.qty + fill.price * fill.qty) / totalQty;
+        pos.entryPrice = weightedEntry;
+        pos.qty = totalQty;
+        return;
+      }
+
+      const closingQty = Math.min(pos.qty, fill.qty);
+      const pnlUSD =
+        pos.side === "LONG"
+          ? (fill.price - pos.entryPrice) * closingQty * contractValue
+          : (pos.entryPrice - fill.price) * closingQty * contractValue;
+
+      const pnlINR = pnlUSD * PAPER_CONFIG.USDINR;
+      this.pnl.record(pnlINR); // Record closing PnL separately
+
+      if (fill.qty < pos.qty) {
+        pos.qty -= fill.qty;
+        return;
+      }
+
+      if (fill.qty === pos.qty) {
+        this.positions.close(fill.productId, fill.productSymbol);
+        return;
+      }
+
+      const remainingQty = fill.qty - pos.qty;
       this.positions.open({
-        side: fill.side === "buy" ? "LONG" : "SHORT",
-        qty: fill.qty,
+        side: fillSide,
+        qty: remainingQty,
         entryPrice: fill.price,
         ...(fill.productId !== undefined ? { productId: fill.productId } : {}),
         ...(fill.productSymbol !== undefined ? { productSymbol: fill.productSymbol } : {}),
         stopPrice: undefined,
         targetPrice: undefined,
       });
-      return;
+    } finally {
+      this.onStateChange?.();
     }
-
-    const pos = existing;
-    const contractValue = this.resolveContractValue(fill.productId, fill.productSymbol);
-    const fillSide = fill.side === "buy" ? "LONG" : "SHORT";
-
-    if (fillSide === pos.side) {
-      const totalQty = pos.qty + fill.qty;
-      const weightedEntry =
-        (pos.entryPrice * pos.qty + fill.price * fill.qty) / totalQty;
-      pos.entryPrice = weightedEntry;
-      pos.qty = totalQty;
-      return;
-    }
-
-    const closingQty = Math.min(pos.qty, fill.qty);
-    const pnlUSD =
-      pos.side === "LONG"
-        ? (fill.price - pos.entryPrice) * closingQty * contractValue
-        : (pos.entryPrice - fill.price) * closingQty * contractValue;
-
-    const pnlINR = pnlUSD * PAPER_CONFIG.USDINR;
-    this.pnl.record(pnlINR); // Record closing PnL separately
-
-    if (fill.qty < pos.qty) {
-      pos.qty -= fill.qty;
-      return;
-    }
-
-    if (fill.qty === pos.qty) {
-      this.positions.close(fill.productId, fill.productSymbol);
-      return;
-    }
-
-    const remainingQty = fill.qty - pos.qty;
-    this.positions.open({
-      side: fillSide,
-      qty: remainingQty,
-      entryPrice: fill.price,
-      ...(fill.productId !== undefined ? { productId: fill.productId } : {}),
-      ...(fill.productSymbol !== undefined ? { productSymbol: fill.productSymbol } : {}),
-      stopPrice: undefined,
-      targetPrice: undefined,
-    });
   }
 
   private findByClientOrderId(clientOrderId: string): PaperOrder | undefined {
@@ -634,5 +650,12 @@ export class PaperExecutor {
   private resolveContractValue(productId?: number, productSymbol?: string) {
     const key = this.leverageKey(productId, productSymbol);
     return this.contractValues.get(key) ?? 1;
+  }
+
+  private resolveCachedProduct(productId?: number, productSymbol?: string): any {
+    // In current main.ts, we don't strictly have a global product cache access for the executor,
+    // but the executor's state could be extended if we needed full metadata.
+    // For now, we return undefined and let main.ts fallback to contractValue=1 if missing.
+    return undefined;
   }
 }

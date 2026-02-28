@@ -22,6 +22,7 @@ import { PaperExecutor } from "./execution/paper.executor.js";
 import { PositionStore } from "./state/position.store.js";
 import { PnlTracker } from "./state/pnl.tracker.js";
 import { OcoManager } from "./execution/oco.manager.js";
+import { savePaperState, loadPaperState } from "./state/persistence.js";
 
 type TickerMessage = {
   type?: string;
@@ -57,7 +58,16 @@ let cachedBalance: number | undefined;
 let lastPaperLogAt = 0;
 let ws: DeltaWsClient | undefined;
 
-process.on("SIGINT", () => {
+async function persistState() {
+  if (env.TRADING_MODE !== "paper") return;
+  await savePaperState({
+    realizedPnl: pnl.value,
+    positions: positions.all(),
+  });
+}
+
+process.on("SIGINT", async () => {
+  await persistState();
   KillSwitch.trigger(KillReason.MANUAL);
 });
 
@@ -109,6 +119,19 @@ async function resolveProductIdBySymbol(restClient: DeltaRestClient, symbol: str
 }
 
 async function bootstrap() {
+  if (env.TRADING_MODE === "paper") {
+    const saved = await loadPaperState();
+    if (saved) {
+      pnl.hydrate(saved.realizedPnl);
+      positions.hydrate(saved.positions);
+      logger.info(
+        `[ARES.BOOT] Restored paper state: PnL=${saved.realizedPnl.toFixed(2)} INR, Positions=${
+          saved.positions.length
+        }`
+      );
+    }
+  }
+
   const symbols = normalizeSymbols();
   if (symbols.length === 0) {
     throw new Error("No symbols configured for trading");
@@ -135,8 +158,6 @@ async function bootstrap() {
       ...(productId !== undefined ? { productId } : {}),
     };
 
-
-    context.productId = productId;
 
     if (productId !== undefined) {
       const collision = [...symbolContexts.values()].find(
@@ -245,6 +266,7 @@ async function bootstrap() {
   );
 
   if (paper) {
+    paper.setOnStateChange(persistState);
     const handleUpdate = (orderId: string, status: string) => {
       orderManager.onPaperOrderUpdate(orderId, status);
       void ocoManager.onOrderUpdate(orderId, status);
@@ -314,6 +336,24 @@ async function getRiskContext(symbol: string): Promise<RiskContext> {
     }
   }
 
+  let equity = balance;
+  let availableBalance = balance;
+
+  if (env.TRADING_MODE === "paper") {
+    // equity = initial + realized pnl/fees
+    equity = balance + pnl.value;
+
+    let usedMargin = 0;
+    for (const pos of positions.all()) {
+      const contractValue = Number(pos.cachedProduct?.contract_value ?? 1);
+      const leverage = paper?.getOrderLeverage(pos.productId, pos.productSymbol).leverage ?? 1;
+      const notionalUSD = pos.qty * pos.entryPrice * contractValue;
+      const marginUSD = Math.abs(notionalUSD) / leverage;
+      usedMargin += marginUSD * RISK_CONFIG.USDINR;
+    }
+    availableBalance = equity - usedMargin;
+  }
+
   const openTradesBySymbol: Record<string, number> = {};
   for (const key of symbolContexts.keys()) {
     openTradesBySymbol[key] = countOpenTradesBySymbol(key);
@@ -321,7 +361,8 @@ async function getRiskContext(symbol: string): Promise<RiskContext> {
   const openTrades = Object.values(openTradesBySymbol).reduce((sum, val) => sum + val, 0);
 
   return {
-    balance,
+    equity,
+    availableBalance,
     dailyPnl: env.TRADING_MODE === "paper" ? pnl.value : 0,
     openTrades,
     openTradesBySymbol,
@@ -362,8 +403,8 @@ async function onNew1mClose(ctx: SymbolContext) {
     const minLotSize = resolveMinLotSize(ctx.cachedProduct);
 
     const ctxRisk = await getRiskContext(ctx.symbol);
-    if (ctxRisk.balance <= 0) {
-      logger.warn("[ARES.RISK] Balance unavailable or zero; blocking execution");
+    if (ctxRisk.equity <= 0) {
+      logger.warn("[ARES.RISK] Equity unavailable or zero; blocking execution");
       return;
     }
 

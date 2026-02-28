@@ -12,4 +12,8 @@ export class PnlTracker {
   get value(): number {
     return this.realized;
   }
+
+  hydrate(value: number) {
+    this.realized = value;
+  }
 }

@@ -6,6 +6,7 @@ export interface Position {
   productSymbol?: string | undefined;
   stopPrice?: number | undefined;
   targetPrice?: number | undefined;
+  cachedProduct?: any;
 }
 
 export class PositionStore {
@@ -63,5 +64,12 @@ export class PositionStore {
 
   closeAll() {
     this.positions.clear();
+  }
+
+  hydrate(positions: Position[]) {
+    this.positions.clear();
+    for (const pos of positions) {
+      this.open(pos);
+    }
   }
 }

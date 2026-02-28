@@ -1,5 +1,6 @@
 export interface RiskContext {
-  balance: number;
+  equity: number;
+  availableBalance: number;
   dailyPnl: number;
   openTrades: number;
   openTradesBySymbol: Record<string, number>;

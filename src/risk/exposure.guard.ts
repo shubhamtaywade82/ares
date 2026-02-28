@@ -14,12 +14,13 @@ export function checkExposure(ctx: RiskContext, symbol: string): string | null {
     return "MAX_OPEN_TRADES_PER_SYMBOL_REACHED";
   }
 
-  const dailyLossPct = Math.abs(ctx.dailyPnl) / ctx.balance;
+  const dailyLossPct = Math.abs(ctx.dailyPnl) / ctx.equity;
 
   if (ctx.dailyPnl < 0 && dailyLossPct >= RISK_CONFIG.maxDailyLossPct) {
     KillSwitch.trigger(KillReason.MAX_DAILY_LOSS, {
       dailyPnl: ctx.dailyPnl,
-      balance: ctx.balance,
+      equity: ctx.equity,
+      available: ctx.availableBalance,
       dailyLossPct,
     });
     return "MAX_DAILY_LOSS_BREACHED";
