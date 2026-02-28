@@ -22,6 +22,8 @@ import { PaperExecutor } from "./execution/paper.executor.js";
 import { PositionStore } from "./state/position.store.js";
 import { PnlTracker } from "./state/pnl.tracker.js";
 import { OcoManager } from "./execution/oco.manager.js";
+import { StructureAnalyzer } from "./strategy/structure.js";
+import { SmcAnalyzer } from "./strategy/smc.js";
 import { savePaperState, loadPaperState } from "./state/persistence.js";
 
 type TickerMessage = {
@@ -40,6 +42,8 @@ type SymbolContext = {
   lastClosed1m: number;
   running: boolean;
   cachedProduct?: any;
+  structure: StructureAnalyzer;
+  smc: SmcAnalyzer;
 };
 
 const rest = new DeltaRestClient();
@@ -153,6 +157,8 @@ async function bootstrap() {
       symbol,
       market,
       indicators,
+      structure: new StructureAnalyzer(),
+      smc: new SmcAnalyzer(),
       lastClosed1m: 0,
       running: false,
       ...(productId !== undefined ? { productId } : {}),
@@ -375,7 +381,10 @@ async function onNew1mClose(ctx: SymbolContext) {
   try {
     await Promise.all([ctx.indicators.update("5m"), ctx.indicators.update("15m")]);
 
-    const signal = await runStrategy(ctx.market, ctx.indicators);
+    ctx.structure.update(ctx.market.candles("15m"));
+    ctx.smc.update(ctx.market.candles("15m"), ctx.structure.lastBreaks);
+
+    const signal = await runStrategy(ctx.market, ctx.indicators, ctx.structure, ctx.smc);
     if (!signal) return;
 
     const last5m = ctx.market.lastClosed("5m");

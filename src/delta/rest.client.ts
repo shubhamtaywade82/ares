@@ -60,7 +60,7 @@ export class DeltaRestClient {
         url: path,
         data: body,
         headers,
-        timeout: options?.timeoutMs,
+        ...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
       });
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -195,7 +195,7 @@ export class DeltaRestClient {
         undefined,
         z.object({ result: z.array(z.any()) }),
         false,
-        { timeoutMs: options?.timeoutMs }
+        options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : undefined
       );
 
     const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

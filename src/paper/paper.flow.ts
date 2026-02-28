@@ -119,7 +119,7 @@ async function run(): Promise<void> {
         const trader = new LiveTrader({
           productSymbol: cfg.symbol,
           side,
-          productId: env.DELTA_PRODUCT_ID,
+          ...(env.DELTA_PRODUCT_ID !== undefined ? { productId: Number(env.DELTA_PRODUCT_ID) } : {}),
           capital: 0,
           leverage: resolveMaxLeverage(cfg.symbol),
           profitTargetPercent: 2,
@@ -138,7 +138,7 @@ async function run(): Promise<void> {
         const trader = new PaperTrader({
           productSymbol: cfg.symbol,
           side,
-          productId: env.DELTA_PRODUCT_ID,
+          ...(env.DELTA_PRODUCT_ID !== undefined ? { productId: Number(env.DELTA_PRODUCT_ID) } : {}),
           capital,
           leverage: resolveMaxLeverage(cfg.symbol),
           profitTargetPercent: 2,

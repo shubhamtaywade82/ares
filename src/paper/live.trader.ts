@@ -471,7 +471,7 @@ export class LiveTrader {
     } else {
       this.resolveRun?.();
     }
-    this.resolveRun = undefined;
-    this.rejectRun = undefined;
+    this.resolveRun = undefined as any;
+    this.rejectRun = undefined as any;
   }
 }

@@ -6,29 +6,25 @@ import { scoreSetup } from "./scorer.js";
 import { SetupSignal } from "./types.js";
 import { env } from "../config/env.js";
 import { logger } from "../utils/logger.js";
+import { StructureAnalyzer } from "./structure.js";
+import { SmcAnalyzer } from "./smc.js";
 
 export async function runStrategy(
   market: MarketCache,
-  indicators: IndicatorCache
+  indicators: IndicatorCache,
+  structure?: StructureAnalyzer,
+  smc?: SmcAnalyzer
 ): Promise<SetupSignal | null> {
   // Hard readiness checks
   if (!indicators.isReady("15m") || !indicators.isReady("5m")) {
-    logger.info("[ARES.STRATEGY] Indicators not ready (5m/15m)");
     return null;
   }
 
-  const bias = computeHTFBias(market, indicators);
-  if (bias === "NONE") {
-    logger.info("[ARES.STRATEGY] HTF bias is NONE");
-    return null;
-  }
-  logger.info(`[ARES.STRATEGY] HTF bias=${bias}`);
+  const bias = computeHTFBias(market, indicators, structure);
+  if (bias === "NONE") return null;
 
-  const setup = detectLTFSetup(bias, market, indicators);
-  if (!setup) {
-    logger.info("[ARES.STRATEGY] No LTF setup detected");
-    return null;
-  }
+  const setup = detectLTFSetup(bias, market, indicators, structure, smc);
+  if (!setup) return null;
 
   const scored = scoreSetup(setup, indicators.snapshot("15m"));
   if (!scored) {
