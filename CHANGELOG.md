@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### feat
+- Added explicit rollback cancel failure logging for bracket placement failures to surface potential orphaned exit orders.
+- Hardened execution with concurrent bracket-fill guard, bracket partial-failure rollback, and durable journal writes (`fsync`) for NDJSON trade records.
+- Added full TP1/TP2/SL exit lifecycle manager with stop-limit initial SL, breakeven stop-limit after TP1, TP2 resizing from live remaining size, and re-entry gating after close.
+- Added NDJSON trade journal output (`logs/trades.ndjson`) including R-multiple and signal context audit fields.
+- Added `BOOT_CLOSE_ORPHAN_POSITIONS` config to auto-close unprotected live positions on boot reconciliation.
 - Added stricter liquidity sweep handling in SMC: closed-candle processing guard, bar-based sweep expiry, capped sweep history, and sweep volume metadata.
 - Added LTF sweep confluence gates (price proximity + volume confirmation) to reduce chop-market false positives.
 - Enriched AI veto SMC context with nearest bullish/bearish OB/FVG levels and distance percentages.
