@@ -11,6 +11,7 @@ export class OrderManager {
   private pendingPaperBrackets = new Map<
     string,
     {
+      productId?: number;
       symbol: string;
       side: ExecutionRequest["side"];
       stopPrice: number;
@@ -87,6 +88,7 @@ export class OrderManager {
           );
       set.entryOrderId = entry.id;
       this.pendingPaperBrackets.set(entry.id, {
+        ...(req.productId !== undefined ? { productId: req.productId } : {}),
         symbol: req.symbol,
         side: req.side,
         stopPrice: req.stopPrice,
@@ -285,6 +287,7 @@ export class OrderManager {
       pending.stopPrice,
       pending.qty,
       {
+        ...(pending.productId !== undefined ? { productId: pending.productId } : {}),
         productSymbol: pending.symbol,
         clientOrderId: `${pending.clientOrderId}-SL`,
         role: "stop",
@@ -295,6 +298,7 @@ export class OrderManager {
       pending.targetPrice,
       pending.qty,
       {
+        ...(pending.productId !== undefined ? { productId: pending.productId } : {}),
         productSymbol: pending.symbol,
         clientOrderId: `${pending.clientOrderId}-TP`,
         role: "take_profit",
@@ -306,7 +310,7 @@ export class OrderManager {
     this.pendingPaperBrackets.delete(orderId);
     logger.info("[ARES.PAPER] Bracket orders submitted");
     this.paper.setPositionBrackets(
-      undefined,
+      pending.productId,
       pending.symbol,
       pending.stopPrice,
       pending.targetPrice
