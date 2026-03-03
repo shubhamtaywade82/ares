@@ -1,8 +1,8 @@
 export const RISK_CONFIG = {
-  riskPerTradePct: 0.01,
-  maxDailyLossPct: 0.02,
-  maxOpenTradesTotal: 4,
-  maxOpenTradesPerSymbol: 1,
+  riskPerTradePct: 0.02,
+  maxDailyLossPct: 0.05,
+  maxOpenTradesTotal: 6,
+  maxOpenTradesPerSymbol: 2,
   minRR: 1.5,
   defaultMaxLeverage: 5,
   maxLeverageBySymbol: {

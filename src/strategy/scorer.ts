@@ -24,7 +24,7 @@ export function scoreSetup(
     reasons.push("ATR healthy");
   }
 
-  if (score < 7) return null;
+  if (score < 5) return null;
 
   return { ...setup, score, reasons };
 }
