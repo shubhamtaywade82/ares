@@ -61,6 +61,7 @@ cp .env.example .env
 ### Trading Configuration
 - `TRADING_MODE`: `live` or `paper`
 - `BOOT_BLOCK_ON_ORPHAN_POSITIONS`: if `true`, triggers kill switch on boot when open live positions are detected
+- `BOOT_CLOSE_ORPHAN_POSITIONS`: if `true`, closes unprotected orphaned live positions during exit-state reconciliation on boot
 - `POSITION_SIZE`: Size of each position
 - `PROFIT_TARGET_PERCENT`: Take profit percentage
 - `STOP_LOSS_PERCENT`: Stop loss percentage
@@ -124,6 +125,7 @@ Example:
 Logs are stored in `logs/`:
 - `combined.log`: All logs
 - `error.log`: Error logs only
+- `trades.ndjson`: one closed-trade record per line (audit/event stream)
 
 ## Delta Endpoints
 Defaults target Delta Exchange India (production).
@@ -138,6 +140,8 @@ Testnet values:
 - Kill switch cleanup now attempts cancel-all-orders and close-all-positions before process exit.
 - Order-update path now logs partial fills explicitly for operator review and bracket-sizing verification.
 - Live partial fills trigger automatic bracket rebalancing to `filled_qty` for SL/TP order sizes.
+- Exit bracket placement now rolls back already-placed orders on partial placement failures to avoid unbalanced protection state.
+- Bracket rollback now logs per-order cancel failures so operators can detect and remediate potential orphaned exits quickly.
 - Rebalancing is monotonic by fill quantity and aborts when prior bracket cancellations fail, preventing duplicate exit brackets.
 - Full-fill updates force a final rebalance attempt so SL/TP size catches up to final `filled_qty` after transient partial-fill failures.
 - Reduce-only open orders are ignored during boot pending-entry reconciliation (they are exits, not new entries).

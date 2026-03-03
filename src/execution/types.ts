@@ -9,6 +9,12 @@ export interface ExecutionRequest {
   targetPrice: number;
   qty: number;
   useMarketEntry?: boolean;
+  signalContext?: {
+    htfBias: string;
+    smcScore: number;
+    rr: number;
+    reason: string;
+  };
 }
 
 export interface ActiveOrderSet {
@@ -22,4 +28,13 @@ export interface ActiveOrderSet {
   targetPrice?: number;
   bracketQty?: number;
   filledQty?: number;
+  signalContext?: {
+    htfBias: string;
+    smcScore: number;
+    rr: number;
+    reason: string;
+  };
 }
+
+
+export * from "./trade.types.js";

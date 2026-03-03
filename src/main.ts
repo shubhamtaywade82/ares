@@ -27,6 +27,10 @@ import { StructureAnalyzer } from "./strategy/structure.js";
 import { SmcAnalyzer } from "./strategy/smc.js";
 import { savePaperState, loadPaperState } from "./state/persistence.js";
 import { managePosition } from "./strategy/management.js";
+import { BracketBuilder } from "./execution/bracket.builder.js";
+import { ExitManager } from "./execution/exit.manager.js";
+import { TradeJournal } from "./execution/trade.journal.js";
+import { ActivePosition } from "./execution/trade.types.js";
 
 type TickerMessage = {
   type?: string;
@@ -55,7 +59,20 @@ const positions = new PositionStore();
 const pnl = new PnlTracker();
 const paper = env.TRADING_MODE === "paper" ? new PaperExecutor(positions, pnl) : undefined;
 const ocoManager = new OcoManager(orderStore, rest, env.TRADING_MODE, paper);
-const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE, paper);
+const activePositions = new Map<string, ActivePosition>();
+const bracketBuilder = new BracketBuilder(rest);
+const tradeJournal = new TradeJournal();
+const exitManager = new ExitManager(rest, bracketBuilder, tradeJournal, activePositions, {
+  isDailyLossBreached: () => {
+    const dailyPnl = env.TRADING_MODE === "paper" ? pnl.value - dailyPnlBaseline : 0;
+    const eq = cachedBalance ?? 0;
+    if (eq <= 0) return false;
+    return dailyPnl < 0 && Math.abs(dailyPnl) / eq >= RISK_CONFIG.maxDailyLossPct;
+  },
+  recordTrade: (tradePnl: number) => pnl.record(tradePnl),
+  activateKillSwitch: (reason: string) => KillSwitch.trigger(KillReason.MAX_DAILY_LOSS, { reason }),
+});
+const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE, paper, bracketBuilder, activePositions);
 
 const symbolContexts = new Map<string, SymbolContext>();
 const livePositions = new Map<string, any>();
@@ -418,6 +435,39 @@ async function bootstrap() {
 
   await reconcileLivePositionsOnBoot();
 
+  if (env.TRADING_MODE === "live") {
+    try {
+      const [bootPosRes, bootOrdersRes] = await Promise.all([
+        rest.getPositions(),
+        rest.getOrders({ state: "open", page_size: 200 }),
+      ]);
+      const bootPositions = Array.isArray(bootPosRes?.result) ? bootPosRes.result : [];
+      const bootOrders = Array.isArray(bootOrdersRes?.result) ? bootOrdersRes.result : [];
+      await exitManager.reconcileOnBoot(
+        bootPositions as Array<Record<string, unknown>>,
+        bootOrders as Array<Record<string, unknown>>,
+        env.BOOT_CLOSE_ORPHAN_POSITIONS,
+        async (symbol: string) => {
+          const open = bootPositions.find(
+            (pos: Record<string, unknown>) =>
+              String(pos.product_symbol ?? pos.symbol ?? "").toUpperCase() === symbol.toUpperCase()
+          );
+          const size = Number(open?.size ?? 0);
+          if (!Number.isFinite(size) || size === 0) return;
+          await rest.placeOrder({
+            product_symbol: symbol,
+            side: size > 0 ? "sell" : "buy",
+            order_type: "market_order",
+            size: Math.abs(size),
+            reduce_only: true,
+          });
+        }
+      );
+    } catch (error) {
+      logger.warn(error, "[ARES.MARKET] Boot reconcile (exit manager) failed:");
+    }
+  }
+
   ws = new DeltaWsClient(
     (msg: TickerMessage) => {
       const msgType = msg.type;
@@ -663,6 +713,10 @@ async function onNew5mClose(ctx: SymbolContext) {
     const signal = await runStrategy(ctx.market, ctx.indicators, ctx.structure, ctx.smc);
     if (!signal) return;
 
+    if (!exitManager.canReenter(ctx.symbol)) {
+      exitManager.clearReentryBlock(ctx.symbol);
+    }
+
     const last5m = ctx.market.lastClosed("5m");
     if (!last5m) {
       logger.warn("[ARES.STRATEGY] Missing 5m close for execution");
@@ -812,6 +866,12 @@ async function onNew5mClose(ctx: SymbolContext) {
       targetPrice,
       qty: risk.qty,
       useMarketEntry: env.TRADING_MODE === "paper" && env.PAPER_MARKET_ENTRY,
+      signalContext: {
+        htfBias: bias,
+        smcScore: signal.score,
+        rr: RISK_CONFIG.minRR,
+        reason: signal.reasons.join(" | "),
+      },
     });
 
     if (env.TRADING_MODE === "live") {
@@ -867,7 +927,19 @@ function handleOrderUpdate(msg: any) {
     if (status === "closed") {
       const filled = Number(order?.filled_size ?? order?.filled_qty ?? 0);
       if (Number.isFinite(filled) && filled > 0) {
-        void orderManager.onLiveEntryFilled(String(orderId), filled);
+        const normalizedOrderId = String(orderId);
+        const avg = Number(order?.average_fill_price ?? order?.avg_fill_price ?? order?.limit_price ?? 0);
+        const fillPrice = Number.isFinite(avg) ? avg : Number(order?.limit_price ?? 0);
+        const isBracketOrder = exitManager.isBracketOrder(normalizedOrderId);
+        const isPendingEntry = pendingLiveEntries.has(String(symbol).toUpperCase());
+
+        if (isPendingEntry && !isBracketOrder) {
+          void orderManager.onLiveEntryFilled(normalizedOrderId, filled, Number.isFinite(avg) ? avg : undefined);
+        } else if (isBracketOrder && Number.isFinite(fillPrice) && fillPrice > 0) {
+          void exitManager.onBracketFill(normalizedOrderId, filled, fillPrice);
+        } else {
+          logger.warn(`[ARES.EXECUTION] Unrouted fill update ignored for ${symbol} order:${normalizedOrderId}`);
+        }
       }
       void ocoManager.onOrderUpdate(String(orderId), status);
       pendingLiveEntries.delete(String(symbol).toUpperCase());
