@@ -8,7 +8,6 @@ import { KillReason } from "../risk/kill.reasons.js";
 import { PaperExecutor } from "./paper.executor.js";
 import { BracketBuilder } from "./bracket.builder.js";
 import { ActivePosition } from "./trade.types.js";
-import { resolveMaxLeverage } from "../config/risk.js";
 
 export class OrderManager {
   private pendingPaperBrackets = new Map<
@@ -55,9 +54,6 @@ export class OrderManager {
         logger.warn("[ARES.PAPER] Paper executor not configured");
         return set;
       }
-
-      const leverage = resolveMaxLeverage(req.symbol);
-      this.paper.setOrderLeverage(req.productId, req.symbol, leverage);
 
       const useMarket = req.useMarketEntry === true;
       const entry = useMarket

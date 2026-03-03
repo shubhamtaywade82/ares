@@ -762,6 +762,11 @@ async function onNew5mClose(ctx: SymbolContext) {
 
     const minLotSize = resolveMinLotSize(ctx.cachedProduct);
 
+    const leverage = resolveMaxLeverage(ctx.symbol);
+    if (paper) {
+      paper.setOrderLeverage(ctx.productId, ctx.symbol, leverage);
+    }
+
     const ctxRisk = await getRiskContext(ctx.symbol);
     if (ctxRisk.equity <= 0) {
       logger.warn("[ARES.RISK] Equity unavailable or zero; blocking execution");
@@ -770,8 +775,6 @@ async function onNew5mClose(ctx: SymbolContext) {
 
     const contractValue = Number(ctx.cachedProduct?.contract_value ?? 1);
     const inrToUsd = 1 / RISK_CONFIG.USDINR;
-
-    const leverage = resolveMaxLeverage(ctx.symbol);
     const requiredMarginInr =
       minLotSize * entryPrice * contractValue * RISK_CONFIG.USDINR / Math.max(1, leverage);
     if (requiredMarginInr > ctxRisk.availableBalance * 0.9) {
@@ -1044,8 +1047,9 @@ function logPaperPosition(ctx: SymbolContext, price: number) {
   const priceChangePct = entry > 0 ? ((price - entry) / entry) * 100 : 0;
 
   const pnlINR = pnl * RISK_CONFIG.USDINR;
+  const assetQty = qty * contractValue;
   logger.info(
-    `[ARES.PAPER] Position ${ctx.symbol} ${pos.side} qty=${qty} entry=${entry.toFixed(
+    `[ARES.PAPER] Position ${ctx.symbol} ${pos.side} qty=${qty} (${assetQty.toFixed(6)} ${currency}) entry=${entry.toFixed(
       2
     )} price=${price.toFixed(2)} ` +
       `pnl=${pnlINR.toFixed(2)} INR ` +
