@@ -60,6 +60,7 @@ cp .env.example .env
 
 ### Trading Configuration
 - `TRADING_MODE`: `live` or `paper`
+- `BOOT_BLOCK_ON_ORPHAN_POSITIONS`: if `true`, triggers kill switch on boot when open live positions are detected
 - `POSITION_SIZE`: Size of each position
 - `PROFIT_TARGET_PERCENT`: Take profit percentage
 - `STOP_LOSS_PERCENT`: Stop loss percentage
@@ -96,6 +97,16 @@ Config:
 - `OLLAMA_URL`, `OLLAMA_MODEL`
 - `OPENAI_API_KEY`, `OPENAI_MODEL`
 
+## SMC Liquidity Sweep Guardrails
+- Sweep detection runs on closed 15m candles only.
+- Active sweeps expire after 8 closed 15m bars (bar-based freshness) and sweep history is capped.
+- Sweep confluence is scored only when both conditions hold:
+  - sweep reference is within 1.5% of current LTF price
+  - sweep candle volume is at least 1.5x recent 20-candle average
+- AI veto receives nearest bullish/bearish OB and FVG levels with distance percentages for directional context.
+- Nearest OB/FVG lookups are freshness-filtered to avoid stale multi-day zones.
+- Bar freshness uses timestamp-derived bar indices (restart-safe).
+
 ## Logging
 Use standardized tags for logs, metrics, and alerts:
 - `ARES.MARKET`
@@ -121,6 +132,18 @@ Testnet values:
 - `DELTA_WS_URL=wss://socket-ind.testnet.deltaex.org`
 
 ## Safety Notes
+- In live mode, ARES reconciles existing live positions and open orders on boot and avoids opening duplicate symbol positions.
+- Live mode blocks new entries when a symbol has a pending entry order and reseeds market caches on WebSocket reconnect.
+- Pending entries are auto-expired after 15 minutes; stale pending orders are cancelled when order IDs are available.
+- Kill switch cleanup now attempts cancel-all-orders and close-all-positions before process exit.
+- Order-update path now logs partial fills explicitly for operator review and bracket-sizing verification.
+- Live partial fills trigger automatic bracket rebalancing to `filled_qty` for SL/TP order sizes.
+- Rebalancing is monotonic by fill quantity and aborts when prior bracket cancellations fail, preventing duplicate exit brackets.
+- Full-fill updates force a final rebalance attempt so SL/TP size catches up to final `filled_qty` after transient partial-fill failures.
+- Reduce-only open orders are ignored during boot pending-entry reconciliation (they are exits, not new entries).
+- If `DELTA_PRODUCT_ID` is configured, boot now verifies it against Delta metadata for each symbol and halts on mismatch.
+- Paper-mode risk uses an IST-midnight-reset daily PnL baseline so `MAX_DAILY_LOSS` applies per Indian calendar day instead of lifetime session PnL.
+- Raw order/position WS payloads are emitted at `debug` level with `[ARES.WS.RAW]` for testnet schema verification.
 - Crypto trading carries significant risk. Never trade with more than you can afford to lose.
 - Always test on testnet or paper mode before live funds.
 - Keep API keys secure and restrict permissions to trading only.
@@ -131,6 +154,11 @@ Testnet values:
 - `npm run build`: Compile to `dist/`
 - `npm run start`: Run compiled output
 - `npm run clean`: Remove `dist/`
+
+## Testing
+- Runner: Node built-in test runner (`node --test`) on compiled files
+- Location: `src/**/*.test.ts`
+- Run: `npm test`
 
 ## License
 MIT License. See `LICENSE`.
