@@ -157,6 +157,23 @@ export class DeltaRestClient {
     );
   }
 
+
+  getOrders(params?: { state?: string; after?: string; before?: string; page_size?: number }) {
+    const search = new URLSearchParams();
+    if (params?.state) search.set("state", params.state);
+    if (params?.after) search.set("after", params.after);
+    if (params?.before) search.set("before", params.before);
+    if (params?.page_size !== undefined) search.set("page_size", String(params.page_size));
+    const qs = search.toString();
+
+    return this.request(
+      "GET",
+      qs ? `/v2/orders?${qs}` : "/v2/orders",
+      undefined,
+      z.object({ result: z.array(z.any()) })
+    );
+  }
+
   placeOrder(payload: object) {
     return this.request(
       "POST",
@@ -173,6 +190,40 @@ export class DeltaRestClient {
       undefined,
       z.object({ success: z.boolean() })
     );
+  }
+
+
+  async cancelAllOrders() {
+    await this.request("DELETE", "/v2/orders/all", undefined, undefined);
+  }
+
+  async closeAllPositions() {
+    const res = await this.getPositions();
+    const positions = Array.isArray(res?.result) ? res.result : [];
+
+    const tasks = positions.map(async (pos: any) => {
+      const rawSize = typeof pos?.size === "string" ? Number(pos.size) : pos?.size;
+      const size = Number(rawSize);
+      if (!Number.isFinite(size) || size === 0) return;
+
+      const symbol = pos?.product_symbol ?? pos?.symbol;
+      if (!symbol) return;
+
+      await this.placeOrder({
+        product_symbol: symbol,
+        side: size > 0 ? "sell" : "buy",
+        order_type: "market_order",
+        size: Math.abs(size),
+        reduce_only: true,
+      });
+    });
+
+    const settled = await Promise.allSettled(tasks);
+    const failures = settled.filter((s) => s.status === "rejected") as PromiseRejectedResult[];
+    if (failures.length > 0) {
+      const reasons = failures.map((f) => String(f.reason)).join(" | ");
+      throw new Error(`closeAllPositions failed for ${failures.length} position(s): ${reasons}`);
+    }
   }
 
   getCandles(

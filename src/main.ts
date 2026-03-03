@@ -15,6 +15,7 @@ import { computeHTFBias } from "./strategy/bias.htf.js";
 import { computeTargets } from "./execution/sltp.manager.js";
 import { createAIClientFromEnv } from "./ai/ai.client.js";
 import { aiVeto } from "./ai/ai.veto.js";
+import { AIVetoInput } from "./ai/ai.types.js";
 import { OrderStore } from "./state/order.store.js";
 import { OrderManager } from "./execution/order.manager.js";
 import { RiskContext } from "./risk/types.js";
@@ -58,10 +59,123 @@ const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE, paper)
 
 const symbolContexts = new Map<string, SymbolContext>();
 const livePositions = new Map<string, any>();
+type PendingLiveEntry = {
+  placedAt: number;
+  orderId?: string;
+};
+
+const pendingLiveEntries = new Map<string, PendingLiveEntry>();
 
 let cachedBalance: number | undefined;
 let lastPaperLogAt = 0;
+let dailyPnlBaseline = 0;
+let dailyPnlResetTimer: NodeJS.Timeout | undefined;
 let ws: DeltaWsClient | undefined;
+let wsConnectedOnce = false;
+let pendingExpiryTimer: NodeJS.Timeout | undefined;
+
+const PENDING_ENTRY_TIMEOUT_MS = 15 * 60 * 1000;
+
+
+function scheduleDailyPnlReset() {
+  if (env.TRADING_MODE !== "paper") return;
+
+  if (dailyPnlResetTimer) {
+    clearTimeout(dailyPnlResetTimer);
+    dailyPnlResetTimer = undefined;
+  }
+
+  const now = new Date();
+  const nowInIST = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const nextMidnightInIST = new Date(nowInIST);
+  nextMidnightInIST.setHours(24, 0, 0, 0);
+  const delayMs = Math.max(1_000, nextMidnightInIST.getTime() - nowInIST.getTime());
+
+  dailyPnlResetTimer = setTimeout(() => {
+    dailyPnlBaseline = pnl.value;
+    logger.info(
+      `[ARES.RISK] Daily PnL baseline reset at IST midnight: baseline=${dailyPnlBaseline.toFixed(2)} INR`
+    );
+    scheduleDailyPnlReset();
+  }, delayMs);
+}
+
+async function performEmergencyFlatten(reason: KillReason) {
+  logger.error(`[ARES.KILL] Emergency flatten start: ${reason}`);
+  try {
+    await rest.cancelAllOrders();
+    logger.error("[ARES.KILL] cancelAllOrders completed");
+  } catch (error) {
+    logger.error(error, "[ARES.KILL] cancelAllOrders failed:");
+  }
+
+  try {
+    await rest.closeAllPositions();
+    logger.error("[ARES.KILL] closeAllPositions completed");
+  } catch (error) {
+    logger.error(error, "[ARES.KILL] closeAllPositions failed:");
+  }
+
+  if (pendingExpiryTimer) clearInterval(pendingExpiryTimer);
+  if (dailyPnlResetTimer) clearTimeout(dailyPnlResetTimer);
+}
+
+KillSwitch.setCleanup(async (reason) => {
+  await performEmergencyFlatten(reason);
+});
+
+function setPendingLiveEntry(symbol: string, orderId?: string, placedAt?: number) {
+  const key = symbol.toUpperCase();
+  const prev = pendingLiveEntries.get(key);
+  pendingLiveEntries.set(key, {
+    placedAt: prev?.placedAt ?? placedAt ?? Date.now(),
+    ...(orderId ? { orderId } : {}),
+  });
+}
+
+async function expireStalePendingEntries() {
+  const now = Date.now();
+  for (const [symbol, pending] of pendingLiveEntries.entries()) {
+    if (now - pending.placedAt <= PENDING_ENTRY_TIMEOUT_MS) continue;
+
+    if (pending.orderId) {
+      try {
+        await rest.cancelOrder(pending.orderId);
+        logger.warn(
+          `[ARES.EXECUTION] Pending entry timeout for ${symbol}; cancelled order ${pending.orderId}`
+        );
+        pendingLiveEntries.delete(symbol);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const lower = message.toLowerCase();
+
+        if (
+          lower.includes("order_not_found") ||
+          lower.includes("already filled") ||
+          lower.includes("404") ||
+          lower.includes("closed") ||
+          lower.includes("cancelled")
+        ) {
+          logger.warn(
+            `[ARES.EXECUTION] Pending entry timeout for ${symbol}; order already resolved (${pending.orderId})`
+          );
+          pendingLiveEntries.delete(symbol);
+          continue;
+        }
+
+        logger.warn(
+          `[ARES.EXECUTION] Pending entry timeout for ${symbol}; cancel failed for ${pending.orderId}, retaining pending state`
+        );
+        logger.warn(error, `[ARES.EXECUTION] Cancel error details for ${symbol}:`);
+        continue;
+      }
+      continue;
+    }
+
+    logger.warn(`[ARES.EXECUTION] Pending entry timeout for ${symbol}; clearing without order id`);
+    pendingLiveEntries.delete(symbol);
+  }
+}
 
 async function persistState() {
   if (env.TRADING_MODE !== "paper") return;
@@ -72,6 +186,16 @@ async function persistState() {
 }
 
 process.on("SIGINT", async () => {
+  await persistState();
+  KillSwitch.trigger(KillReason.MANUAL);
+});
+
+process.on("SIGTERM", async () => {
+  await persistState();
+  KillSwitch.trigger(KillReason.MANUAL);
+});
+
+process.on("SIGUSR1", async () => {
   await persistState();
   KillSwitch.trigger(KillReason.MANUAL);
 });
@@ -89,6 +213,69 @@ function normalizeSymbols(): string[] {
     return [env.DELTA_PRODUCT_SYMBOL.toUpperCase()];
   }
   return ["BTCUSD", "ETHUSD", "XRPUSD", "SOLUSD"];
+}
+
+async function reconcileLivePositionsOnBoot() {
+  if (env.TRADING_MODE !== "live") return;
+
+  try {
+    const res = await rest.getPositions();
+    const positionsList = Array.isArray(res?.result) ? res.result : [];
+
+    let openCount = 0;
+    for (const pos of positionsList) {
+      const symbol = pos?.product_symbol ?? pos?.symbol;
+      if (symbol == null) continue;
+
+      const size = Number(pos?.size ?? 0);
+      if (!Number.isFinite(size) || size === 0) continue;
+
+      const key = String(symbol).toUpperCase();
+      if (!symbolContexts.has(key)) continue;
+
+      livePositions.set(key, pos);
+      openCount += 1;
+      logger.warn(
+        `[ARES.MARKET] Reconciled open live position on boot: ${key} size=${size}`
+      );
+    }
+
+    let pendingCount = 0;
+    try {
+      const ordersRes = await rest.getOrders({ state: "open", page_size: 200 });
+      const openOrders = Array.isArray(ordersRes?.result) ? ordersRes.result : [];
+
+      for (const order of openOrders) {
+        const symbol = order?.product_symbol ?? order?.symbol;
+        const id = order?.id ?? order?.order_id;
+        if (symbol == null || id == null) continue;
+
+        const key = String(symbol).toUpperCase();
+        if (!symbolContexts.has(key)) continue;
+
+        const reduceOnly = Boolean(order?.reduce_only ?? order?.reduceOnly);
+        if (reduceOnly) {
+          logger.info(`[ARES.MARKET] Ignoring reduce-only open order on boot for ${key}: ${id}`);
+          continue;
+        }
+
+        setPendingLiveEntry(key, String(id), Number(order?.created_at) || undefined);
+        pendingCount += 1;
+      }
+    } catch (error) {
+      logger.warn(error, "[ARES.MARKET] Failed to reconcile open orders on boot:");
+    }
+
+    if ((openCount > 0 || pendingCount > 0) && env.BOOT_BLOCK_ON_ORPHAN_POSITIONS) {
+      logger.error(
+        `[ARES.RISK] BOOT_BLOCK_ON_ORPHAN_POSITIONS enabled; triggering kill switch for ` +
+          `${openCount} open position(s) and ${pendingCount} open order(s)`
+      );
+      KillSwitch.trigger(KillReason.STATE_INCONSISTENT);
+    }
+  } catch (error) {
+    logger.warn(error, "[ARES.MARKET] Failed to reconcile positions on boot:");
+  }
 }
 
 async function resolveProductIdBySymbol(restClient: DeltaRestClient, symbol: string) {
@@ -123,6 +310,25 @@ async function resolveProductIdBySymbol(restClient: DeltaRestClient, symbol: str
   return undefined;
 }
 
+async function verifyConfiguredProductId(restClient: DeltaRestClient, symbol: string, configuredProductId: number) {
+  try {
+    const res = await restClient.getProductBySymbol(symbol);
+    const rawId = res?.result?.id ?? res?.result?.product_id ?? res?.result?.productId;
+    const resolved = typeof rawId === "string" ? Number(rawId) : rawId;
+    if (!Number.isFinite(resolved)) {
+      throw new Error(`Could not resolve product id for ${symbol} from Delta product metadata`);
+    }
+    if (Number(resolved) !== configuredProductId) {
+      throw new Error(
+        `[ARES.MARKET] Product ID mismatch for ${symbol}: configured=${configuredProductId}, delta=${Number(resolved)}`
+      );
+    }
+  } catch (error) {
+    logger.error(error, `[ARES.MARKET] Product ID verification failed for ${symbol}:`);
+    throw error;
+  }
+}
+
 async function bootstrap() {
   if (env.TRADING_MODE === "paper") {
     const saved = await loadPaperState();
@@ -137,6 +343,9 @@ async function bootstrap() {
     }
   }
 
+  dailyPnlBaseline = pnl.value;
+  scheduleDailyPnlReset();
+
   const symbols = normalizeSymbols();
   if (symbols.length === 0) {
     throw new Error("No symbols configured for trading");
@@ -144,8 +353,15 @@ async function bootstrap() {
 
   for (const symbol of symbols) {
     let productId = env.DELTA_PRODUCT_ID;
+    const useConfiguredProductId = Boolean(
+      productId && (!env.DELTA_PRODUCT_SYMBOL || env.DELTA_PRODUCT_SYMBOL === symbol)
+    );
     if (env.DELTA_PRODUCT_SYMBOL && env.DELTA_PRODUCT_SYMBOL !== symbol) {
       productId = undefined;
+    }
+
+    if (useConfiguredProductId && productId) {
+      await verifyConfiguredProductId(rest, symbol, productId);
     }
 
     if (!productId) {
@@ -200,6 +416,8 @@ async function bootstrap() {
     symbolContexts.set(symbol.toUpperCase(), context);
   }
 
+  await reconcileLivePositionsOnBoot();
+
   ws = new DeltaWsClient(
     (msg: TickerMessage) => {
       const msgType = msg.type;
@@ -251,12 +469,23 @@ async function bootstrap() {
       logger.error("KILL SWITCH TRIGGERED");
       process.exit(1);
     },
-    () => {
+    async () => {
       const symbolsForWs = Array.from(symbolContexts.keys());
+
+      if (wsConnectedOnce) {
+        logger.warn("[ARES.MARKET] WS reconnected; reseeding market caches before resubscribe");
+        await Promise.all(
+          Array.from(symbolContexts.values()).map((ctx) =>
+            bootstrapMarket(rest, ctx.market, ctx.symbol)
+          )
+        );
+      }
+
       logger.info(
         `[ARES.MARKET] WS connected; subscribing to ticker (${symbolsForWs.join(",")})`
       );
       ws?.subscribe("v2/ticker", symbolsForWs);
+      wsConnectedOnce = true;
     },
     {
       auth: env.TRADING_MODE === "live",
@@ -282,6 +511,12 @@ async function bootstrap() {
       }
     };
     paper.setOnOrderUpdate(handleUpdate);
+  }
+
+  if (env.TRADING_MODE === "live") {
+    pendingExpiryTimer = setInterval(() => {
+      void expireStalePendingEntries();
+    }, 60_000);
   }
 
   ws.connect();
@@ -370,7 +605,7 @@ async function getRiskContext(symbol: string): Promise<RiskContext> {
   return {
     equity,
     availableBalance,
-    dailyPnl: env.TRADING_MODE === "paper" ? pnl.value : 0,
+    dailyPnl: env.TRADING_MODE === "paper" ? pnl.value - dailyPnlBaseline : 0,
     openTrades,
     openTradesBySymbol,
   };
@@ -380,10 +615,16 @@ async function onNew5mClose(ctx: SymbolContext) {
   if (ctx.running) return;
   ctx.running = true;
   try {
+    if (env.TRADING_MODE === "live") {
+      await expireStalePendingEntries();
+    }
+
     await Promise.all([ctx.indicators.update("5m"), ctx.indicators.update("15m")]);
 
-    ctx.structure.update(ctx.market.candles("15m"));
-    ctx.smc.update(ctx.market.candles("15m"), ctx.structure.lastBreaks);
+    const candles15m = ctx.market.candles("15m");
+    const closed15m = candles15m.slice(0, -1);
+    ctx.structure.update(closed15m);
+    ctx.smc.update(closed15m, ctx.structure.lastBreaks, ctx.structure.lastSwings, true);
 
     // --- Active Position Management ---
     const activePos = positions.getByProduct(ctx.productId, ctx.symbol);
@@ -409,6 +650,14 @@ async function onNew5mClose(ctx: SymbolContext) {
         }
       }
       return; // Skip setup detection if position is active
+    }
+
+    if (
+      env.TRADING_MODE === "live" &&
+      (countOpenTradesBySymbol(ctx.symbol) > 0 || pendingLiveEntries.has(ctx.symbol.toUpperCase()))
+    ) {
+      logger.info(`[ARES.STRATEGY] Skipping ${ctx.symbol}: live position already open/pending`);
+      return;
     }
 
     const signal = await runStrategy(ctx.market, ctx.indicators, ctx.structure, ctx.smc);
@@ -447,6 +696,16 @@ async function onNew5mClose(ctx: SymbolContext) {
     const contractValue = Number(ctx.cachedProduct?.contract_value ?? 1);
     const inrToUsd = 1 / RISK_CONFIG.USDINR;
 
+    const leverage = resolveMaxLeverage(ctx.cachedProduct);
+    const requiredMarginInr =
+      minLotSize * entryPrice * contractValue * RISK_CONFIG.USDINR / Math.max(1, leverage);
+    if (requiredMarginInr > ctxRisk.availableBalance * 0.9) {
+      logger.warn(
+        `[ARES.RISK] Margin check failed for ${ctx.symbol}: required=${requiredMarginInr.toFixed(2)} available=${ctxRisk.availableBalance.toFixed(2)}`
+      );
+      return;
+    }
+
     const risk = evaluateRisk(ctxRisk, {
       symbol: ctx.symbol,
       entryPrice,
@@ -460,23 +719,30 @@ async function onNew5mClose(ctx: SymbolContext) {
 
     const bias = computeHTFBias(ctx.market, ctx.indicators);
     const ind15m = ctx.indicators.snapshot("15m");
-    const aiInput = {
+    const activeSweep = ctx.smc.activeSweep?.type;
+    const activeSweepMetrics = ctx.smc.activeSweepMetrics();
+    const nearestBullishOb = ctx.smc.nearestOB(entryPrice, "BULLISH");
+    const nearestBearishOb = ctx.smc.nearestOB(entryPrice, "BEARISH");
+    const nearestBullishFvg = ctx.smc.nearestFVG(entryPrice, "BULLISH");
+    const nearestBearishFvg = ctx.smc.nearestFVG(entryPrice, "BEARISH");
+    const htf: AIVetoInput["timeframeBias"]["htf"] =
+      bias === "LONG" ? "BULL" : bias === "SHORT" ? "BEAR" : "RANGE";
+    const emaSlope: AIVetoInput["timeframeBias"]["emaSlope"] =
+      ctx.market.candles("15m").length >= 2 &&
+      ctx.market.candles("15m").at(-1)!.close > ctx.market.candles("15m").at(-2)!.close
+        ? "UP"
+        : ctx.market.candles("15m").length >= 2 &&
+            ctx.market.candles("15m").at(-1)!.close < ctx.market.candles("15m").at(-2)!.close
+          ? "DOWN"
+          : "FLAT";
+    const aiInput: AIVetoInput = {
       symbol: ctx.symbol,
       side: signal.side,
       timeframeBias: {
-        htf: bias === "LONG" ? "BULL" : bias === "SHORT" ? "BEAR" : "RANGE",
+        htf,
         rsi: ind15m.rsi14 ?? 50,
-        emaSlope:
-          ctx.market.candles("15m").length >= 2 &&
-          ctx.market.candles("15m").at(-1)!.close >
-            ctx.market.candles("15m").at(-2)!.close
-            ? "UP"
-            : ctx.market.candles("15m").length >= 2 &&
-                ctx.market.candles("15m").at(-1)!.close <
-                  ctx.market.candles("15m").at(-2)!.close
-              ? "DOWN"
-              : "FLAT",
-      } as any, // Cast to any to bypass the htf type mismatch for now or fix types
+        emaSlope,
+      },
       setupQuality: {
         score: signal.score,
         reasons: signal.reasons,
@@ -487,6 +753,19 @@ async function onNew5mClose(ctx: SymbolContext) {
       },
       marketContext: {
         session: resolveSession(),
+        smc: {
+          ...(activeSweep ? { activeSweep } : {}),
+          ...(activeSweepMetrics
+            ? {
+                activeSweepAgeMinutes: activeSweepMetrics.ageMinutes,
+                activeSweepVolumeRatio: activeSweepMetrics.volumeRatio,
+              }
+            : {}),
+          ...(nearestBullishOb ? { nearestBullishOb } : {}),
+          ...(nearestBearishOb ? { nearestBearishOb } : {}),
+          ...(nearestBullishFvg ? { nearestBullishFvg } : {}),
+          ...(nearestBearishFvg ? { nearestBearishFvg } : {}),
+        },
       },
     };
 
@@ -520,7 +799,11 @@ async function onNew5mClose(ctx: SymbolContext) {
       }
     }
 
-    await orderManager.execute({
+    if (env.TRADING_MODE === "live") {
+      setPendingLiveEntry(ctx.symbol);
+    }
+
+    const executionSet = await orderManager.execute({
       symbol: ctx.symbol,
       ...(ctx.productId !== undefined ? { productId: ctx.productId } : {}),
       side: signal.side,
@@ -530,6 +813,14 @@ async function onNew5mClose(ctx: SymbolContext) {
       qty: risk.qty,
       useMarketEntry: env.TRADING_MODE === "paper" && env.PAPER_MARKET_ENTRY,
     });
+
+    if (env.TRADING_MODE === "live") {
+      if (executionSet.entryOrderId) {
+        setPendingLiveEntry(ctx.symbol, executionSet.entryOrderId);
+      } else {
+        pendingLiveEntries.delete(ctx.symbol.toUpperCase());
+      }
+    }
   } catch (error) {
     logger.error(error, "[ARES.STRATEGY] Cycle failure");
   } finally {
@@ -547,15 +838,24 @@ function resolveOrderStatus(order: any): string | undefined {
   const state = order?.state ?? order?.order_state;
   if (typeof state === "string") {
     if (state === "filled") return "closed";
+    if (state === "partially_filled") return "partial";
     return state;
   }
   if (order?.action === "delete") return "closed";
+
+  const unfilled = Number(order?.unfilled_size);
+  const filled = Number(order?.filled_size);
+  if (Number.isFinite(unfilled) && Number.isFinite(filled) && filled > 0 && unfilled > 0) {
+    return "partial";
+  }
+
   if (order?.reason === "fill" && order?.unfilled_size === 0) return "closed";
   if (order?.unfilled_size === 0 && order?.filled_size != null) return "closed";
   return undefined;
 }
 
 function handleOrderUpdate(msg: any) {
+  logger.debug(`[ARES.WS.RAW] order_update ${JSON.stringify(msg)}`);
   const updates = normalizeOrderUpdates(msg);
   for (const order of updates) {
     const symbol = order?.product_symbol ?? order?.symbol;
@@ -565,7 +865,28 @@ function handleOrderUpdate(msg: any) {
     if (orderId == null) continue;
     const status = resolveOrderStatus(order);
     if (status === "closed") {
+      const filled = Number(order?.filled_size ?? order?.filled_qty ?? 0);
+      if (Number.isFinite(filled) && filled > 0) {
+        void orderManager.onLiveEntryFilled(String(orderId), filled);
+      }
       void ocoManager.onOrderUpdate(String(orderId), status);
+      pendingLiveEntries.delete(String(symbol).toUpperCase());
+      continue;
+    }
+
+    if (status === "partial") {
+      const filled = Number(order?.filled_size ?? order?.filled_qty ?? 0);
+      logger.warn(
+        `[ARES.EXECUTION] Partial fill detected for ${symbol}: filled=${filled}. Rebalancing brackets to filled quantity.`
+      );
+      if (Number.isFinite(filled) && filled > 0) {
+        void orderManager.onLiveEntryPartialFill(String(orderId), filled);
+      }
+      continue;
+    }
+
+    if (status === "cancelled" || status === "rejected") {
+      pendingLiveEntries.delete(String(symbol).toUpperCase());
     }
   }
 }
@@ -577,6 +898,7 @@ function normalizePositions(msg: any): any[] {
 }
 
 function handlePositionUpdate(msg: any) {
+  logger.debug(`[ARES.WS.RAW] position_update ${JSON.stringify(msg)}`);
   const updates = normalizePositions(msg);
   for (const pos of updates) {
     const symbol = pos?.product_symbol ?? pos?.symbol;
@@ -586,6 +908,7 @@ function handlePositionUpdate(msg: any) {
     const size = Number(pos?.size ?? 0);
     if (Number.isFinite(size) && size !== 0) {
       livePositions.set(key, pos);
+      pendingLiveEntries.delete(key);
     } else {
       livePositions.delete(key);
     }

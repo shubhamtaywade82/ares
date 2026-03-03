@@ -20,6 +20,27 @@ export class OrderManager {
     }
   >();
 
+
+  private isPostOnlyRejection(error: unknown): boolean {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    return (
+      message.includes("post_only") ||
+      message.includes("post-only") ||
+      message.includes("would cross") ||
+      message.includes("postonly")
+    );
+  }
+
+  private isTerminalCancelError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    return (
+      message.includes("not found") ||
+      message.includes("already cancelled") ||
+      message.includes("already canceled") ||
+      message.includes("already filled")
+    );
+  }
+
   constructor(
     private rest: DeltaRestClient,
     private store: OrderStore,
@@ -30,6 +51,12 @@ export class OrderManager {
   async execute(req: ExecutionRequest) {
     const clientOrderId = uuid();
     const set = this.store.create(clientOrderId);
+    set.symbol = req.symbol;
+    set.side = req.side;
+    set.stopPrice = req.stopPrice;
+    set.targetPrice = req.targetPrice;
+    set.bracketQty = req.qty;
+    set.filledQty = 0;
 
     if (this.mode === "paper") {
       if (!this.paper) {
@@ -81,10 +108,16 @@ export class OrderManager {
         side: req.side === "LONG" ? "buy" : "sell",
         order_type: "limit_order",
         limit_price: String(req.entryPrice),
+        post_only: true,
         size: req.qty,
         client_order_id: clientOrderId,
       });
     } catch (err) {
+      if (this.isPostOnlyRejection(err)) {
+        logger.warn(`[ARES.EXECUTION] Post-only rejected for ${req.symbol}; skipping entry`);
+        logger.warn(err, `[ARES.EXECUTION] Post-only rejection details for ${req.symbol}:`);
+        return set;
+      }
       KillSwitch.trigger(KillReason.EXECUTION_FAILURE, {
         stage: "ENTRY",
         error: String(err),
@@ -162,6 +195,81 @@ export class OrderManager {
     set.targetOrderId = String(tp.result.id);
 
     return set;
+  }
+
+
+  async onLiveEntryPartialFill(entryOrderId: string, filledQty: number) {
+    if (this.mode !== "live") return;
+    if (!Number.isFinite(filledQty) || filledQty <= 0) return;
+
+    for (const set of this.store.values()) {
+      if (set.entryOrderId !== entryOrderId) continue;
+      if (!set.stopOrderId || !set.targetOrderId) return;
+      if (!set.symbol || !set.side || set.stopPrice == null || set.targetPrice == null) return;
+
+      const currentFillQty = set.filledQty ?? 0;
+      if (filledQty <= currentFillQty) return;
+
+      const cancelResults = await Promise.allSettled([
+        this.rest.cancelOrder(set.stopOrderId),
+        this.rest.cancelOrder(set.targetOrderId),
+      ]);
+      const hasNonTerminalCancelFailure = cancelResults.some(
+        (result) =>
+          result.status === "rejected" &&
+          !this.isTerminalCancelError(result.reason)
+      );
+      if (hasNonTerminalCancelFailure) {
+        logger.error(
+          `[ARES.EXECUTION] Rebalance skipped for ${set.symbol}: existing bracket cancel failed for entry ${entryOrderId}`
+        );
+        return;
+      }
+
+      const stop = await this.rest.placeOrder({
+        product_symbol: set.symbol,
+        side: set.side === "LONG" ? "sell" : "buy",
+        order_type: "limit_order",
+        stop_order_type: "stop_loss_order",
+        stop_price: String(set.stopPrice),
+        size: filledQty,
+        reduce_only: true,
+        client_order_id: `${set.clientOrderId}-SL-RSZ`,
+      });
+
+      const tp = await this.rest.placeOrder({
+        product_symbol: set.symbol,
+        side: set.side === "LONG" ? "sell" : "buy",
+        order_type: "limit_order",
+        limit_price: String(set.targetPrice),
+        size: filledQty,
+        reduce_only: true,
+        client_order_id: `${set.clientOrderId}-TP-RSZ`,
+      });
+
+      if (stop?.result?.id) set.stopOrderId = String(stop.result.id);
+      if (tp?.result?.id) set.targetOrderId = String(tp.result.id);
+      set.bracketQty = filledQty;
+      set.filledQty = filledQty;
+      logger.warn(
+        `[ARES.EXECUTION] Rebalanced live brackets for ${set.symbol} to filled_qty=${filledQty}`
+      );
+      return;
+    }
+  }
+
+  async onLiveEntryFilled(entryOrderId: string, filledQty: number) {
+    if (!Number.isFinite(filledQty) || filledQty <= 0) return;
+    for (const set of this.store.values()) {
+      if (set.entryOrderId !== entryOrderId) continue;
+      const currentFillQty = set.filledQty ?? 0;
+      if (filledQty > currentFillQty) {
+        await this.onLiveEntryPartialFill(entryOrderId, filledQty);
+      }
+      set.filledQty = Math.max(set.filledQty ?? 0, filledQty);
+      set.bracketQty = Math.max(set.bracketQty ?? 0, filledQty);
+      return;
+    }
   }
 
   onPaperOrderUpdate(orderId: string, status: string) {

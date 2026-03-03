@@ -11,6 +11,11 @@ Rules:
 - You cannot suggest new trades
 - You must respond with valid JSON only
 - If uncertain, choose BLOCK
+- Use SMC freshness fields explicitly when present:
+  - activeSweepAgeMinutes
+  - activeSweepVolumeRatio
+  - nearest zone distPct
+  - nearest zone isInside
 
 Respond format:
 {

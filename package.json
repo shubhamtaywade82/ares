@@ -10,7 +10,8 @@
     "build": "tsc",
     "start": "node dist/main.js",
     "lint": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "npm run build && node --test dist/**/*.test.js"
   },
   "keywords": [],
   "author": "",

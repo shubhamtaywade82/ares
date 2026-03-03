@@ -16,4 +16,10 @@ export interface ActiveOrderSet {
   stopOrderId?: string;
   targetOrderId?: string;
   clientOrderId: string;
+  symbol?: string;
+  side?: ExecutionSide;
+  stopPrice?: number;
+  targetPrice?: number;
+  bracketQty?: number;
+  filledQty?: number;
 }
