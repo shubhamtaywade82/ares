@@ -82,9 +82,11 @@ type PendingLiveEntry = {
 };
 
 const pendingLiveEntries = new Map<string, PendingLiveEntry>();
+const watchlistLtps = new Map<string, number>();
 
 let cachedBalance: number | undefined;
 let lastPaperLogAt = 0;
+let lastWatchlistLtpLogAt = 0;
 let dailyPnlBaseline = 0;
 let dailyPnlResetTimer: NodeJS.Timeout | undefined;
 let ws: DeltaWsClient | undefined;
@@ -230,6 +232,23 @@ function normalizeSymbols(): string[] {
     return [env.DELTA_PRODUCT_SYMBOL.toUpperCase()];
   }
   return ["BTCUSD", "ETHUSD", "XRPUSD", "SOLUSD"];
+}
+
+function logWatchlistLtps(nowMs: number) {
+  if (nowMs - lastWatchlistLtpLogAt < 5_000) return;
+  lastWatchlistLtpLogAt = nowMs;
+
+  const snapshot = Array.from(symbolContexts.keys())
+    .map((symbol) => {
+      const ltp = watchlistLtps.get(symbol);
+      if (!Number.isFinite(ltp)) return `${symbol}=NA`;
+      return `${symbol}=${ltp!.toFixed(2)}`;
+    })
+    .join(" | ");
+
+  if (snapshot.length > 0) {
+    logger.info(`[ARES.MARKET] Watchlist LTP ${snapshot}`);
+  }
 }
 
 async function reconcileLivePositionsOnBoot() {
@@ -505,6 +524,8 @@ async function bootstrap() {
 
       const tsMs = parsedTs > 1e12 ? parsedTs / 1000 : parsedTs;
       ctx.market.ingestTick(price, volume, tsMs);
+      watchlistLtps.set(ctx.symbol.toUpperCase(), price);
+      logWatchlistLtps(Date.now());
       if (paper) {
         paper.onTick(price, ctx.productId, ctx.symbol);
         logPaperPosition(ctx, price);
