@@ -750,7 +750,7 @@ async function onNew5mClose(ctx: SymbolContext) {
     const contractValue = Number(ctx.cachedProduct?.contract_value ?? 1);
     const inrToUsd = 1 / RISK_CONFIG.USDINR;
 
-    const leverage = resolveMaxLeverage(ctx.cachedProduct);
+    const leverage = resolveMaxLeverage(ctx.symbol);
     const requiredMarginInr =
       minLotSize * entryPrice * contractValue * RISK_CONFIG.USDINR / Math.max(1, leverage);
     if (requiredMarginInr > ctxRisk.availableBalance * 0.9) {
