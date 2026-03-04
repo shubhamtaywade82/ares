@@ -58,8 +58,10 @@ A professional-grade, high-frequency scalping bot for Delta Exchange futures tra
 - Orderbook imbalance analysis
 - Volume confirmation
 - Trend alignment
-- Signal strength filtering (minimum 70%)
-- Risk-reward validation (minimum 1.5:1)
+- **Senior Prop Desk Trader Persona**: AI analysis using a Tiered Confluence Framework.
+- **Multi-Intent Veto**: Support for both Entry (ALLOW/BLOCK) and Exit (HOLD/CLOSE) filters.
+- **Risk-Reward Validation** (minimum 1.5:1)
+
 
 ### 4. Comprehensive Risk Management
 - Daily loss limits
@@ -181,11 +183,19 @@ npm start
 ```
 
 ### Recommended: PM2 for Production
+PM2 ensures 24/7 uptime and automatic recovery.
+
 ```bash
-npm install -g pm2
-pm2 start dist/index.js --name delta-scalper
-pm2 save
+# Start background process
+npm run start:paper # Paper Mode
+npm run start:live  # Live Mode
+
+# Management
+npm run logs        # Monitor AI decisions & signals
+npm run monitor     # System dashboard
+npm run stop        # Graceful shutdown
 ```
+
 
 ## 🔒 Security Features
 

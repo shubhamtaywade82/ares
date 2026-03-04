@@ -81,11 +81,18 @@ cp .env.example .env
 npm run dev
 ```
 
-### Production Mode
+### Production Mode (Recommended)
+PM2 ensures the bot runs 24/7 and restarts on crash.
+
 ```bash
 npm run build
-npm run start
+npm run start:paper # Start in background (Paper Mode)
+npm run start:live  # Start in background (Live Mode)
+npm run logs        # View real-time decisions
+npm run monitor     # View CPU/Memory dashboard
+npm run stop        # Stop the background process
 ```
+
 
 ## AI Veto Layer (Optional)
 AI is a post-strategy veto only. It must never generate trades, adjust risk, or touch execution.
@@ -95,8 +102,17 @@ Flow:
 
 Config:
 - `AI_PROVIDER` (`ollama` or `openai`, default `ollama`)
-- `OLLAMA_URL`, `OLLAMA_MODEL`
+- `OLLAMA_URL`, `OLLAMA_MODEL` (e.g., `qwen3:8b`)
 - `OPENAI_API_KEY`, `OPENAI_MODEL`
+
+### Senior Prop Desk Trader Persona
+The AI follows a **Tiered Confluence Framework**:
+1. **Tier 1 (Market Structure)**: Local vs HTF trend alignment.
+2. **Tier 2 (Liquidity)**: Proximity to SMC Order Blocks and Fair Value Gaps.
+3. **Tier 3 (Precision)**: EMA, VWAP, and RSI momentum.
+
+AI Veto takes both **ENTRY** (`ALLOW`/`BLOCK`) and **EXIT** (`HOLD`/`CLOSE`) intents.
+
 
 ## SMC Liquidity Sweep Guardrails
 - Sweep detection runs on closed 15m candles only.
