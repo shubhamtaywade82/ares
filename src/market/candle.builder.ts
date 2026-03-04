@@ -9,10 +9,6 @@ export class CandleBuilder {
   }
 
   bootstrap(initial: DeltaCandle[]) {
-    if (this.candles.length > 0) {
-      throw new Error("CandleBuilder already bootstrapped");
-    }
-
     // assume REST candles are sorted
     this.candles = [...initial];
   }

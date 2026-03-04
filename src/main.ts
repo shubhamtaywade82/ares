@@ -242,7 +242,8 @@ function logWatchlistLtps(nowMs: number) {
     .map((symbol) => {
       const ltp = watchlistLtps.get(symbol);
       if (!Number.isFinite(ltp)) return `${symbol}=NA`;
-      return `${symbol}=${ltp!.toFixed(2)}`;
+      const precision = symbol === "XRPUSD" ? 4 : 2;
+      return `${symbol}=${ltp!.toFixed(precision)}`;
     })
     .join(" | ");
 
@@ -1048,10 +1049,11 @@ function logPaperPosition(ctx: SymbolContext, price: number) {
 
   const pnlINR = pnl * RISK_CONFIG.USDINR;
   const assetQty = qty * contractValue;
+  const precision = ctx.symbol === "XRPUSD" ? 4 : 2;
   logger.info(
     `[ARES.PAPER] Position ${ctx.symbol} ${pos.side} qty=${qty} (${assetQty.toFixed(6)} ${currency}) entry=${entry.toFixed(
-      2
-    )} price=${price.toFixed(2)} ` +
+      precision
+    )} price=${price.toFixed(precision)} ` +
       `pnl=${pnlINR.toFixed(2)} INR ` +
       `priceChange=${priceChangePct.toFixed(2)}% ` +
       `pnlPct=${pnlPct.toFixed(2)}%`
