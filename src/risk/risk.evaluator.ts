@@ -34,6 +34,6 @@ export function evaluateRisk(
     return { allowed: false, reason: leverageFail };
   }
 
-  logger.info(`[ARES.RISK] Allowed qty=${size.qty}`);
+  logger.debug(`[ARES.RISK] Allowed qty=${size.qty}`);
   return { allowed: true, qty: size.qty };
 }

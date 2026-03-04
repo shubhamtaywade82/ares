@@ -128,7 +128,7 @@ export class DeltaWsClient {
       BASE_RECONNECT_DELAY_MS * 2 ** (this.reconnectAttempts - 1),
       MAX_RECONNECT_DELAY_MS
     );
-    console.warn(
+    console.error(
       `[ARES.WS] ${reason} — reconnect attempt ${this.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`
     );
 

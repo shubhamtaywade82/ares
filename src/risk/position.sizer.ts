@@ -20,7 +20,7 @@ export function calculatePositionSize(
 
   const sizedQty = Math.min(rawQty, maxQty);
 
-  logger.info(
+  logger.debug(
     `[ARES.RISK] PositionSize equityINR=${input.equity.toFixed(2)} availINR=${input.availableBalance.toFixed(2)} riskUSD=${riskAmountUSD.toFixed(2)} stopDistUSD=${stopDistanceUSD.toFixed(2)} rawQty=${rawQty.toFixed(2)} maxQty=${maxQty.toFixed(2)} minLotSize=${input.minLotSize}`
   );
 

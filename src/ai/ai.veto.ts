@@ -28,14 +28,8 @@ function validateDecision(d: any): asserts d is AIDecision {
  * Extract the first valid JSON object from a string that may be wrapped in
  * markdown code fences (```json ... ```). Many local models ignore "no fences"
  * instructions in the prompt.
- *
- * Strategy:
- * 1. Try to extract from markdown fences
- * 2. Try to parse entire response
- * 3. Fallback: Find last {...} block (usually the final decision)
  */
 function extractJson(raw: string): AIDecision {
-  // 1. Strip ```json ... ``` or ``` ... ``` fences
   const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
   const candidate = (fenceMatch ? fenceMatch[1] ?? "" : raw).trim();
 
@@ -44,55 +38,81 @@ function extractJson(raw: string): AIDecision {
     validateDecision(parsed);
     return parsed;
   } catch (fenceError) {
-    // 2. Fallback: try to find all {...} blocks (non-nested only)
     const jsonMatches = raw.match(/\{[^{}]*\}/g);
     if (jsonMatches && jsonMatches.length > 0) {
-      // Try LAST block first (usually the final decision), then first
       const toTry = [...jsonMatches.reverse(), ...jsonMatches];
       for (const jsonStr of toTry) {
         try {
           const parsed = JSON.parse(jsonStr);
           validateDecision(parsed);
-          logger.debug(`[ARES.AI] Extracted JSON from fallback attempt: ${jsonStr.slice(0, 80)}`);
+          logger.debug(`[ARES.AI] Extracted JSON from fallback: ${jsonStr.slice(0, 50)}...`);
           return parsed;
         } catch {
-          // Continue to next match
           continue;
         }
       }
     }
-
-    throw new Error(
-      `Failed to extract valid AI decision. Raw response: "${raw.slice(0, 150)}"`
-    );
+    throw new Error(`No valid JSON found in raw response: ${raw.slice(0, 50)}...`);
   }
+}
+
+/**
+ * Heuristic fallback for models that ignore JSON formatting.
+ */
+function heuristicDecision(raw: string, intent: string): AIDecision {
+  const upper = raw.toUpperCase();
+  let decision: "ALLOW" | "BLOCK" | "HOLD" | "CLOSE" =
+    intent === "EXIT" ? "HOLD" : "BLOCK";
+
+  if (intent === "EXIT") {
+    if (upper.includes("CLOSE") || upper.includes("SELL") || upper.includes("EXIT")) {
+      decision = "CLOSE";
+    }
+  } else {
+    if (upper.includes("ALLOW") || upper.includes("YES") || upper.includes("BUY") || upper.includes("CONFLUENCE")) {
+      decision = "ALLOW";
+    } else if (upper.includes("BLOCK") || upper.includes("NO") || upper.includes("AVOID")) {
+      decision = "BLOCK";
+    }
+  }
+
+  return {
+    decision,
+    reason: `HEURISTIC: ${raw.slice(0, 50).replace(/\n/g, " ")}...`,
+  };
 }
 
 export async function aiVeto(
   client: AIClient,
   input: AIVetoInput
 ): Promise<{ allowed: boolean; reason: string }> {
-  const prompt = buildAIPrompt(input);
-  const raw = await client.analyze(prompt);
-
   try {
-    const parsed = extractJson(raw);
+    const prompt = buildAIPrompt(input);
+    const raw = await client.analyze(prompt);
+
+    let parsed: AIDecision;
+    try {
+      parsed = extractJson(raw);
+    } catch (parseError) {
+      logger.debug(`[ARES.AI] JSON Extraction failed. Trying heuristic fallback.`);
+      parsed = heuristicDecision(raw, input.intent);
+    }
+
     if (parsed.decision === "ALLOW" || parsed.decision === "HOLD") {
       logger.info(
         `[ARES.RISK] AI ${input.intent} ✅ ${parsed.decision} for ${input.symbol}: ${parsed.reason}`
       );
       return { allowed: true, reason: parsed.reason };
     }
+
     logger.warn(
       `[ARES.RISK] AI ${input.intent} ❌ ${parsed.decision} for ${input.symbol}: ${parsed.reason}`
     );
     return { allowed: false, reason: parsed.reason };
+
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    logger.error(
-      `[ARES.RISK] AI veto failed for ${input.intent} on ${input.symbol}: ${errorMsg}`
-    );
-    logger.debug(`[ARES.RISK] Raw AI response: ${raw.slice(0, 200)}`);
-    return { allowed: false, reason: `AI_PARSE_ERROR: ${errorMsg}` };
+    logger.error(`[ARES.RISK] AI veto fatal error: ${errorMsg}`);
+    return { allowed: false, reason: `AI_FATAL_ERROR: ${errorMsg}` };
   }
 }

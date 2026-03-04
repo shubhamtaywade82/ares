@@ -1,4 +1,6 @@
 import axios from "axios";
+import { Ollama } from "ollama";
+import { logger } from "../utils/logger.js";
 
 export type AIProvider = "ollama" | "openai";
 
@@ -12,14 +14,23 @@ export interface AIClientOptions {
 
 export class AIClient {
   private provider: AIProvider;
-  private ollamaUrl: string;
+  private ollama: Ollama | undefined;
   private ollamaModel: string;
   private openaiModel: string;
   private openaiApiKey: string | undefined;
+  private queue: Promise<any> = Promise.resolve();
 
   constructor(options: AIClientOptions) {
     this.provider = options.provider;
-    this.ollamaUrl = options.ollamaUrl ?? "http://localhost:11434/api/chat";
+
+    // Ollama library expects the base host, not the full endpoint
+    // e.g. "http://localhost:11434" instead of "http://localhost:11434/api/chat"
+    const host = options.ollamaUrl ? options.ollamaUrl.replace("/api/chat", "").replace("/api/generate", "") : "http://localhost:11434";
+
+    if (this.provider === "ollama") {
+      this.ollama = new Ollama({ host });
+    }
+
     this.ollamaModel = options.ollamaModel ?? "qwen3:latest";
     this.openaiModel = options.openaiModel ?? "gpt-4.1-mini";
     this.openaiApiKey = options.openaiApiKey ?? process.env.OPENAI_API_KEY;
@@ -27,21 +38,47 @@ export class AIClient {
 
   async analyze(
     prompt: { role: string; content: string },
-    timeoutMs = 30_000
+    timeoutMs = 120_000
   ): Promise<string> {
-    if (this.provider === "ollama") {
-      const res = await axios.post(
-        this.ollamaUrl,
-        {
+    // Sequential queue to prevent slamming local LLM
+    return new Promise((resolve, reject) => {
+      this.queue = this.queue.then(async () => {
+        try {
+          logger.debug(`[ARES.AI] Processing AI request from queue (timeout: ${timeoutMs}ms)`);
+          const result = await this._analyzeInternal(prompt, timeoutMs);
+          resolve(result);
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+  }
+
+  private async _analyzeInternal(
+    prompt: { role: any; content: string },
+    timeoutMs: number
+  ): Promise<string> {
+    if (this.provider === "ollama" && this.ollama) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const response = await this.ollama.chat({
           model: this.ollamaModel,
           messages: [prompt],
           stream: false,
           format: "json",
           options: { temperature: 0 },
-        },
-        { timeout: timeoutMs }
-      );
-      return res.data.message.content;
+        });
+        clearTimeout(timeout);
+        return response.message.content;
+      } catch (error: any) {
+        clearTimeout(timeout);
+        if (error.name === "AbortError") {
+          throw new Error(`Ollama request timed out after ${timeoutMs}ms`);
+        }
+        throw error;
+      }
     }
 
     if (!this.openaiApiKey) {
@@ -68,8 +105,9 @@ export class AIClient {
 
   async healthCheck(timeoutMs = 1500): Promise<boolean> {
     try {
-      if (this.provider === "ollama") {
-        await axios.get("http://localhost:11434/api/version", { timeout: timeoutMs });
+      if (this.provider === "ollama" && this.ollama) {
+        // ollama library doesn't have a direct health check but we can check versions
+        await axios.get(`${(this.ollama as any).config.host}/api/version`, { timeout: timeoutMs });
         return true;
       }
 

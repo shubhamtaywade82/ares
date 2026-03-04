@@ -1,5 +1,7 @@
+export type AIIntent = "ENTRY" | "EXIT" | "PULSE";
+
 export interface AIVetoInput {
-  intent: "ENTRY" | "EXIT";
+  intent: AIIntent;
   symbol: string;
   lastPrice: number;
   side: "LONG" | "SHORT";

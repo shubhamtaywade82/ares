@@ -15,7 +15,7 @@ import { computeHTFBias } from "./strategy/bias.htf.js";
 import { computeTargets } from "./execution/sltp.manager.js";
 import { createAIClientFromEnv } from "./ai/ai.client.js";
 import { aiVeto } from "./ai/ai.veto.js";
-import { AIVetoInput } from "./ai/ai.types.js";
+import { AIVetoInput, AIIntent } from "./ai/ai.types.js";
 import { OrderStore } from "./state/order.store.js";
 import { OrderManager } from "./execution/order.manager.js";
 import { RiskContext } from "./risk/types.js";
@@ -46,6 +46,7 @@ type SymbolContext = {
   market: MarketCache;
   indicators: IndicatorCache;
   lastClosed5m: number;
+  lastClosed15m: number;
   running: boolean;
   cachedProduct?: any;
   structure: StructureAnalyzer;
@@ -234,23 +235,7 @@ function normalizeSymbols(): string[] {
   return ["BTCUSD", "ETHUSD", "XRPUSD", "SOLUSD"];
 }
 
-function logWatchlistLtps(nowMs: number) {
-  if (nowMs - lastWatchlistLtpLogAt < 5_000) return;
-  lastWatchlistLtpLogAt = nowMs;
 
-  const snapshot = Array.from(symbolContexts.keys())
-    .map((symbol) => {
-      const ltp = watchlistLtps.get(symbol);
-      if (!Number.isFinite(ltp)) return `${symbol}=NA`;
-      const precision = symbol === "XRPUSD" ? 4 : 2;
-      return `${symbol}=${ltp!.toFixed(precision)}`;
-    })
-    .join(" | ");
-
-  if (snapshot.length > 0) {
-    logger.info(`[ARES.MARKET] Watchlist LTP ${snapshot}`);
-  }
-}
 
 async function reconcileLivePositionsOnBoot() {
   if (env.TRADING_MODE !== "live") return;
@@ -414,6 +399,7 @@ async function bootstrap() {
       structure: new StructureAnalyzer(),
       smc: new SmcAnalyzer(),
       lastClosed5m: 0,
+      lastClosed15m: 0,
       running: false,
       ...(productId !== undefined ? { productId } : {}),
     };
@@ -526,10 +512,10 @@ async function bootstrap() {
       const tsMs = parsedTs > 1e12 ? parsedTs / 1000 : parsedTs;
       ctx.market.ingestTick(price, volume, tsMs);
       watchlistLtps.set(ctx.symbol.toUpperCase(), price);
-      logWatchlistLtps(Date.now());
+      // logWatchlistLtps(Date.now()); // Disabled as per user request to reduce noise
       if (paper) {
         paper.onTick(price, ctx.productId, ctx.symbol);
-        logPaperPosition(ctx, price);
+        // logPaperPosition(ctx, price); // Disabled to reduce noise
       }
 
       const closed5m = ctx.market.lastClosed("5m");
@@ -685,7 +671,7 @@ async function getRiskContext(symbol: string): Promise<RiskContext> {
 
 function prepareAIInput(
   ctx: SymbolContext,
-  intent: "ENTRY" | "EXIT",
+  intent: AIIntent,
   price: number,
   side: "LONG" | "SHORT",
   score?: number,
@@ -754,6 +740,17 @@ function prepareAIInput(
     },
   };
 }
+async function runAIPulse(ctx: SymbolContext, price: number) {
+  logger.info(`[ARES.AI.PULSE] Generating market pulse for ${ctx.symbol}...`);
+  const aiInput = prepareAIInput(ctx, "PULSE", price, "LONG", undefined, undefined);
+  try {
+    const ai = await aiVeto(aiClient, aiInput);
+    const sentiment = ai.allowed ? "✅ HEALTHY" : "⚠️ CAUTION";
+    logger.info(`[ARES.AI.PULSE] ${ctx.symbol} ${sentiment}: ${ai.reason}`);
+  } catch (error) {
+    logger.debug(`[ARES.AI.PULSE] Pulse skipped for ${ctx.symbol}: ${String(error)}`);
+  }
+}
 
 
 async function onNew5mClose(ctx: SymbolContext) {
@@ -768,6 +765,14 @@ async function onNew5mClose(ctx: SymbolContext) {
 
     const candles15m = ctx.market.candles("15m");
     const closed15m = candles15m.slice(0, -1);
+
+    // Pulse on every new 15m candle close
+    const last15m = closed15m.at(-1);
+    if (last15m && last15m.timestamp !== ctx.lastClosed15m) {
+      ctx.lastClosed15m = last15m.timestamp;
+      void runAIPulse(ctx, last15m.close);
+    }
+
     ctx.structure.update(closed15m);
     ctx.smc.update(closed15m, ctx.structure.lastBreaks, ctx.structure.lastSwings, true);
 
@@ -882,7 +887,11 @@ async function onNew5mClose(ctx: SymbolContext) {
       if (env.TRADING_MODE !== "paper") return;
     }
 
-    const risk = evaluateRisk(ctxRisk, {
+    const effectiveRiskCtx = env.TRADING_MODE === "paper"
+      ? { ...ctxRisk, equity: Math.max(ctxRisk.equity, 10000), availableBalance: Math.max(ctxRisk.availableBalance, 10000) }
+      : ctxRisk;
+
+    const risk = evaluateRisk(effectiveRiskCtx, {
       symbol: ctx.symbol,
       entryPrice,
       stopPrice,

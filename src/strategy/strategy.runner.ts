@@ -17,19 +17,19 @@ export async function runStrategy(
 ): Promise<SetupSignal | null> {
   // Hard readiness checks
   if (!indicators.isReady("15m") || !indicators.isReady("5m")) {
-    logger.info(`[ARES.STRATEGY] Indicators not ready (15m: ${indicators.isReady('15m')}, 5m: ${indicators.isReady('5m')})`);
+    logger.debug(`[ARES.STRATEGY] Indicators not ready (15m: ${indicators.isReady('15m')}, 5m: ${indicators.isReady('5m')})`);
     return null;
   }
 
   const bias = computeHTFBias(market, indicators, structure);
   if (bias === "NONE") {
-    logger.info("[ARES.STRATEGY] Bias is NONE");
+    logger.debug("[ARES.STRATEGY] Bias is NONE");
     return null;
   }
 
   const setup = detectLTFSetup(bias, market, indicators, structure, smc);
   if (!setup) {
-    logger.info(`[ARES.STRATEGY] No LTF setup for bias ${bias}`);
+    logger.debug(`[ARES.STRATEGY] No LTF setup for bias ${bias}`);
     return null;
   }
 
@@ -39,10 +39,10 @@ export async function runStrategy(
       logger.warn("[ARES.STRATEGY] Score below threshold; bypassing in paper");
       return setup;
     }
-    logger.info("[ARES.STRATEGY] Setup score below threshold");
+    logger.debug("[ARES.STRATEGY] Setup score below threshold");
     return null;
   }
-  logger.info(`[ARES.STRATEGY] Setup scored=${scored.score}`);
+  logger.debug(`[ARES.STRATEGY] Setup scored=${scored.score}`);
 
   return scored;
 }
