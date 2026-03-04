@@ -879,7 +879,7 @@ async function onNew5mClose(ctx: SymbolContext) {
       logger.warn(
         `[ARES.RISK] Margin check failed for ${ctx.symbol}: required=${requiredMarginInr.toFixed(2)} available=${ctxRisk.availableBalance.toFixed(2)}`
       );
-      return;
+      if (env.TRADING_MODE !== "paper") return;
     }
 
     const risk = evaluateRisk(ctxRisk, {

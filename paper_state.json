@@ -1,1 +1,6 @@
-{"balance":10000,"positions":{},"trades":[],"dailyPnl":0}
+{
+    "balance": 10000,
+    "positions": {},
+    "trades": [],
+    "dailyPnl": 0
+}

@@ -11,6 +11,11 @@
     "start": "node dist/main.js",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist",
+    "monitor": "npx pm2 monit",
+    "start:paper": "npx pm2 start ecosystem.config.cjs",
+    "start:live": "npx pm2 start ecosystem.config.cjs --env live",
+    "stop": "npx pm2 stop ares-bot",
+    "logs": "npx pm2 logs ares-bot",
     "test": "npm run build && node --test dist/**/*.test.js"
   },
   "keywords": [],
