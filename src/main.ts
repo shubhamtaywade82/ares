@@ -683,6 +683,79 @@ async function getRiskContext(symbol: string): Promise<RiskContext> {
   };
 }
 
+function prepareAIInput(
+  ctx: SymbolContext,
+  intent: "ENTRY" | "EXIT",
+  price: number,
+  side: "LONG" | "SHORT",
+  score?: number,
+  reasons?: string[]
+): AIVetoInput {
+  const ind15m = ctx.indicators.snapshot("15m");
+  const ind5m = ctx.indicators.snapshot("5m");
+
+  const htf: AIVetoInput["timeframeBias"]["htf"] =
+    ctx.structure.lastBias === "BULLISH"
+      ? "BULL"
+      : ctx.structure.lastBias === "BEARISH"
+        ? "BEAR"
+        : "RANGE";
+
+  const emaSlope: AIVetoInput["timeframeBias"]["emaSlope"] =
+    ctx.market.candles("15m").length >= 2 &&
+    ctx.market.candles("15m").at(-1)!.close > ctx.market.candles("15m").at(-2)!.close
+      ? "UP"
+      : ctx.market.candles("15m").length >= 2 &&
+          ctx.market.candles("15m").at(-1)!.close < ctx.market.candles("15m").at(-2)!.close
+        ? "DOWN"
+        : "FLAT";
+
+  const activeSweepMetrics = ctx.smc.activeSweepMetrics();
+  const nearestBullishOb = ctx.smc.nearestOB(price, "BULLISH");
+  const nearestBearishOb = ctx.smc.nearestOB(price, "BEARISH");
+  const nearestBullishFvg = ctx.smc.nearestFVG(price, "BULLISH");
+  const nearestBearishFvg = ctx.smc.nearestFVG(price, "BEARISH");
+
+  return {
+    intent,
+    symbol: ctx.symbol,
+    lastPrice: price,
+    side,
+    timeframeBias: {
+      htf,
+      rsi: ind15m.rsi14 ?? 50,
+      emaSlope,
+    },
+    setupQuality: score != null ? { score, reasons: reasons ?? [] } : undefined,
+    volatility: {
+      atr: ind15m.atr14 ?? ind5m.atr14 ?? 0,
+      atrPercentile: 0.5,
+    },
+    indicators: {
+      ema20: ind5m.ema20 ?? 0,
+      ema200: ind5m.ema200 ?? 0,
+      vwap: ind5m.vwap ?? 0,
+    },
+    marketContext: {
+      session: resolveSession(),
+      smc: {
+        ...(ctx.smc.activeSweep?.type ? { activeSweep: ctx.smc.activeSweep.type } : {}),
+        ...(activeSweepMetrics
+          ? {
+              activeSweepAgeMinutes: activeSweepMetrics.ageMinutes,
+              activeSweepVolumeRatio: activeSweepMetrics.volumeRatio,
+            }
+          : {}),
+        ...(nearestBullishOb ? { nearestBullishOb } : {}),
+        ...(nearestBearishOb ? { nearestBearishOb } : {}),
+        ...(nearestBullishFvg ? { nearestBullishFvg } : {}),
+        ...(nearestBearishFvg ? { nearestBearishFvg } : {}),
+      },
+    },
+  };
+}
+
+
 async function onNew5mClose(ctx: SymbolContext) {
   if (ctx.running) return;
   ctx.running = true;
@@ -719,6 +792,30 @@ async function onNew5mClose(ctx: SymbolContext) {
             paper.updateStopLoss(ctx.productId, ctx.symbol, action.newStop);
           }
           // Live SL update logic could go here
+        }
+      } else {
+        // AI Exit Advice
+        const aiExitInput = prepareAIInput(
+          ctx,
+          "EXIT",
+          last1m.close,
+          activePos.side,
+          undefined,
+          undefined
+        );
+
+        try {
+          const ai = await aiVeto(aiClient, aiExitInput);
+          if (!ai.allowed) {
+            logger.info(`[ARES.MANAGEMENT] AI Exit advice for ${ctx.symbol}: ${ai.reason}`);
+            if (env.TRADING_MODE === "paper" && paper) {
+              paper.closePosition(ctx.productId, ctx.symbol, last1m.close);
+            }
+            // Live exit logic would go here
+            return;
+          }
+        } catch (error) {
+          logger.debug(`[ARES.MANAGEMENT] AI exit check skipped: ${String(error)}`);
         }
       }
       return; // Skip setup detection if position is active
@@ -797,56 +894,14 @@ async function onNew5mClose(ctx: SymbolContext) {
     if (!risk.allowed) return;
 
     const bias = computeHTFBias(ctx.market, ctx.indicators);
-    const ind15m = ctx.indicators.snapshot("15m");
-    const activeSweep = ctx.smc.activeSweep?.type;
-    const activeSweepMetrics = ctx.smc.activeSweepMetrics();
-    const nearestBullishOb = ctx.smc.nearestOB(entryPrice, "BULLISH");
-    const nearestBearishOb = ctx.smc.nearestOB(entryPrice, "BEARISH");
-    const nearestBullishFvg = ctx.smc.nearestFVG(entryPrice, "BULLISH");
-    const nearestBearishFvg = ctx.smc.nearestFVG(entryPrice, "BEARISH");
-    const htf: AIVetoInput["timeframeBias"]["htf"] =
-      bias === "LONG" ? "BULL" : bias === "SHORT" ? "BEAR" : "RANGE";
-    const emaSlope: AIVetoInput["timeframeBias"]["emaSlope"] =
-      ctx.market.candles("15m").length >= 2 &&
-      ctx.market.candles("15m").at(-1)!.close > ctx.market.candles("15m").at(-2)!.close
-        ? "UP"
-        : ctx.market.candles("15m").length >= 2 &&
-            ctx.market.candles("15m").at(-1)!.close < ctx.market.candles("15m").at(-2)!.close
-          ? "DOWN"
-          : "FLAT";
-    const aiInput: AIVetoInput = {
-      symbol: ctx.symbol,
-      side: signal.side,
-      timeframeBias: {
-        htf,
-        rsi: ind15m.rsi14 ?? 50,
-        emaSlope,
-      },
-      setupQuality: {
-        score: signal.score,
-        reasons: signal.reasons,
-      },
-      volatility: {
-        atr: ind15m.atr14 ?? ind5m.atr14,
-        atrPercentile: 0.5,
-      },
-      marketContext: {
-        session: resolveSession(),
-        smc: {
-          ...(activeSweep ? { activeSweep } : {}),
-          ...(activeSweepMetrics
-            ? {
-                activeSweepAgeMinutes: activeSweepMetrics.ageMinutes,
-                activeSweepVolumeRatio: activeSweepMetrics.volumeRatio,
-              }
-            : {}),
-          ...(nearestBullishOb ? { nearestBullishOb } : {}),
-          ...(nearestBearishOb ? { nearestBearishOb } : {}),
-          ...(nearestBullishFvg ? { nearestBullishFvg } : {}),
-          ...(nearestBearishFvg ? { nearestBearishFvg } : {}),
-        },
-      },
-    };
+    const aiInput = prepareAIInput(
+      ctx,
+      "ENTRY",
+      entryPrice,
+      signal.side,
+      signal.score,
+      signal.reasons
+    );
 
     let aiAllowed = true;
     const aiHealthy = await aiClient.healthCheck(1500);

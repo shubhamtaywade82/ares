@@ -1,18 +1,25 @@
 export interface AIVetoInput {
+  intent: "ENTRY" | "EXIT";
   symbol: string;
+  lastPrice: number;
   side: "LONG" | "SHORT";
   timeframeBias: {
     htf: "BULL" | "BEAR" | "RANGE";
     rsi: number;
     emaSlope: "UP" | "DOWN" | "FLAT";
   };
-  setupQuality: {
+  setupQuality?: {
     score: number;
     reasons: string[];
-  };
+  } | undefined;
   volatility: {
     atr: number;
     atrPercentile: number;
+  };
+  indicators: {
+    ema20: number;
+    ema200: number;
+    vwap: number;
   };
   marketContext: {
     fundingRate?: number;

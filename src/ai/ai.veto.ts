@@ -3,7 +3,7 @@ import { buildAIPrompt } from "./prompt.builder.js";
 import { AIVetoInput } from "./ai.types.js";
 import { logger } from "../utils/logger.js";
 
-type AIDecision = { decision: "ALLOW" | "BLOCK"; reason: string };
+type AIDecision = { decision: "ALLOW" | "BLOCK" | "HOLD" | "CLOSE"; reason: string };
 
 /**
  * Extract the first valid JSON object from a string that may be wrapped in
@@ -34,11 +34,11 @@ export async function aiVeto(
 
   try {
     const parsed = extractJson(raw);
-    if (parsed.decision === "ALLOW") {
-      logger.info(`[ARES.RISK] AI veto allow: ${parsed.reason}`);
+    if (parsed.decision === "ALLOW" || parsed.decision === "HOLD") {
+      logger.info(`[ARES.RISK] AI ${input.intent} ${parsed.decision}: ${parsed.reason}`);
       return { allowed: true, reason: parsed.reason };
     }
-    logger.warn(`[ARES.RISK] AI veto block: ${parsed.reason}`);
+    logger.warn(`[ARES.RISK] AI ${input.intent} ${parsed.decision}: ${parsed.reason}`);
     return { allowed: false, reason: parsed.reason };
   } catch {
     logger.warn(`[ARES.RISK] AI veto unparseable; raw="${raw.slice(0, 120)}"`);
