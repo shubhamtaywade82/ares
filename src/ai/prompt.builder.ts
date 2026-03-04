@@ -15,17 +15,21 @@ Rules:
 - You cannot change entry, stop, target, or size.
 - You cannot suggest new trades.
 - You must respond with valid JSON only.
-- If the trade setup is low quality or contradicts market context, choose BLOCK.
+- If the trade setup is low quality or contradicts market context, choose BLOCK or CLOSE.
 - Use SMC freshness fields explicitly:
-  - activeSweepAgeMinutes
-  - activeSweepVolumeRatio
-  - nearest zone distPct
-  - nearest zone isInside
+  - activeSweepAgeMinutes (> 60 mins = stale)
+  - activeSweepVolumeRatio (< 1.5 = weak)
+  - nearest zone distPct (> 3% = far)
+  - nearest zone isInside (true = in zone)
+
+Decision Rules by Intent:
+- ENTRY intent: Respond with "ALLOW" (trade setup valid) or "BLOCK" (setup invalid)
+- EXIT intent: Respond with "HOLD" (keep position) or "CLOSE" (exit position)
 
 Respond format:
 {
-  "decision": "ALLOW" | "BLOCK",
-  "reason": "string"
+  "decision": "ALLOW" | "BLOCK" | "HOLD" | "CLOSE",
+  "reason": "string (explain your reasoning in 10-30 words, minimum 5 words)"
 }
 
 Trade Context:
