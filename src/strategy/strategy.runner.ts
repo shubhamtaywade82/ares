@@ -17,14 +17,21 @@ export async function runStrategy(
 ): Promise<SetupSignal | null> {
   // Hard readiness checks
   if (!indicators.isReady("15m") || !indicators.isReady("5m")) {
+    logger.info(`[ARES.STRATEGY] Indicators not ready (15m: ${indicators.isReady('15m')}, 5m: ${indicators.isReady('5m')})`);
     return null;
   }
 
   const bias = computeHTFBias(market, indicators, structure);
-  if (bias === "NONE") return null;
+  if (bias === "NONE") {
+    logger.info("[ARES.STRATEGY] Bias is NONE");
+    return null;
+  }
 
   const setup = detectLTFSetup(bias, market, indicators, structure, smc);
-  if (!setup) return null;
+  if (!setup) {
+    logger.info(`[ARES.STRATEGY] No LTF setup for bias ${bias}`);
+    return null;
+  }
 
   const scored = scoreSetup(setup, indicators.snapshot("15m"));
   if (!scored) {
