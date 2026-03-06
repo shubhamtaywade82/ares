@@ -82,6 +82,7 @@ export class DeltaRestClient {
   // ---------- ENDPOINTS ----------
 
   getProducts(params?: {
+    symbol?: string;
     contract_types?: string;
     states?: string;
     after?: string;
@@ -90,6 +91,7 @@ export class DeltaRestClient {
     expiry?: string;
   }) {
     const search = new URLSearchParams();
+    if (params?.symbol) search.set("symbol", params.symbol);
     if (params?.contract_types) search.set("contract_types", params.contract_types);
     if (params?.states) search.set("states", params.states);
     if (params?.after) search.set("after", params.after);

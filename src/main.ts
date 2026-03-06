@@ -26,6 +26,7 @@ import { computeHTFBias } from "./strategy/bias.htf.js";
 import { computeTargets } from "./execution/sltp.manager.js";
 import { createAIClientFromEnv } from "./ai/ai.client.js";
 import { aiVeto } from "./ai/ai.veto.js";
+import { AIVetoInput } from "./ai/ai.types.js";
 import { OrderStore } from "./state/order.store.js";
 import { OrderManager } from "./execution/order.manager.js";
 import { RiskContext } from "./risk/types.js";
@@ -43,14 +44,23 @@ import { ActivePosition } from "./execution/trade.types.js";
 type TickerMessage = {
   type?: string;
   price?: number | string;
+  mark_price?: number | string;
+  close?: number | string;
+  spot_price?: number | string;
   volume?: number | string;
   timestamp?: number;
   symbol?: string;
 };
 
+function tickerPrice(msg: TickerMessage): number | null {
+  const raw = msg.mark_price ?? msg.close ?? msg.spot_price ?? msg.price;
+  if (raw == null) return null;
+  return typeof raw === "string" ? Number(raw) : raw;
+}
+
 type SymbolContext = {
   symbol: string;
-  productId?: number;
+  productId?: number | undefined;
   market: MarketCache;
   indicators: IndicatorCache;
   lastClosed5m: number;
@@ -77,6 +87,20 @@ const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE, paper,
 const symbolContexts = new Map<string, SymbolContext>();
 const livePositions = new Map<string, any>();
 const watchlistLtps = new Map<string, number>();
+
+const AI_ANALYSIS_LOG_MAX = 20;
+const aiAnalysisLog: Array<{ symbol: string; intent: string; decision: "ALLOW" | "BLOCK"; reason: string; timestamp: number }> = [];
+
+function pushAiAnalysis(symbol: string, intent: string, allowed: boolean, reason: string): void {
+  aiAnalysisLog.unshift({
+    symbol,
+    intent,
+    decision: allowed ? "ALLOW" : "BLOCK",
+    reason,
+    timestamp: Date.now(),
+  });
+  if (aiAnalysisLog.length > AI_ANALYSIS_LOG_MAX) aiAnalysisLog.pop();
+}
 
 let cachedBalance: number | undefined;
 let dailyPnlBaseline = 0;
@@ -134,14 +158,11 @@ async function getRiskContext(symbol: string): Promise<RiskContext> {
   const openTrades = Object.values(openTradesBySymbol).reduce((sum, val) => sum + val, 0);
 
   return {
-    symbol,
     equity,
     availableBalance,
     openTrades,
     openTradesBySymbol,
     dailyPnl: env.TRADING_MODE === "paper" ? pnl.value - dailyPnlBaseline : 0,
-    maxDailyLossPct: RISK_CONFIG.maxDailyLossPct,
-    maxSymbolExposure: 1,
   };
 }
 
@@ -160,6 +181,18 @@ const API_PORT = 3001;
 async function getStatePayload(): Promise<object> {
   const riskCtx = await getRiskContext("BTCUSD");
   const snapshot = fsm.getSnapshot();
+  const tickers = Array.from(symbolContexts.entries()).map(([symbol, ctx]) => {
+    let lastPrice = ctx.market.lastPrice();
+    if (lastPrice <= 0) {
+      const last5m = ctx.market.lastClosed("5m");
+      if (last5m) lastPrice = last5m.close;
+    }
+    if (lastPrice <= 0) {
+      const last15m = ctx.market.lastClosed("15m");
+      if (last15m) lastPrice = last15m.close;
+    }
+    return { symbol, lastPrice };
+  });
   return {
     ...snapshot,
     portfolio: {
@@ -171,6 +204,8 @@ async function getStatePayload(): Promise<object> {
     },
     activePositions: Array.from(activePositions.values()),
     history: tradeJournal.history.slice(-10),
+    market: { tickers },
+    aiAnalysis: aiAnalysisLog.slice(0, 15),
   };
 }
 
@@ -204,7 +239,7 @@ const stateServer = http.createServer(async (req, res) => {
 const wss = new WebSocketServer({ server: stateServer });
 
 function normalizeSymbols(): string[] {
-  const raw = env.DELTA_PRODUCT_SYMBOL;
+  const raw = env.DELTA_PRODUCT_SYMBOLS ?? env.DELTA_PRODUCT_SYMBOL;
   if (!raw) return ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD"];
   return raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
 }
@@ -299,17 +334,23 @@ async function bootstrap() {
 
   const ws = new DeltaWsClient(
     (msg: any) => {
-      if (msg?.type === "v2/ticker") handleTickerMessage(msg);
+      if (msg?.type === "v2/ticker") {
+        handleTickerMessage(msg);
+        const price = tickerPrice(msg);
+        if (price == null || !msg.symbol) return;
+        const ctx = symbolContexts.get(msg.symbol);
+        if (ctx) {
+          ctx.market.ingestTick(price, 0, Date.now());
+          if (paper) paper.onTick(price, ctx.productId, ctx.symbol);
+          const closed5m = ctx.market.lastClosed("5m");
+          if (closed5m && closed5m.timestamp !== ctx.lastClosed5m) {
+            ctx.lastClosed5m = closed5m.timestamp;
+            void onNew5mClose(ctx);
+          }
+        }
+      }
       if (msg?.channel === "orders") handleOrderUpdate(msg);
       if (msg?.channel === "positions") handlePositionUpdate(msg);
-    },
-    (price: number, ctx: SymbolContext) => {
-      ctx.market.ingestTick(price, 0, Date.now());
-      if (paper) paper.onTick(price, ctx.productId, ctx.symbol);
-      const closed5m = ctx.market.lastClosed("5m");
-      if (!closed5m || closed5m.timestamp === ctx.lastClosed5m) return;
-      ctx.lastClosed5m = closed5m.timestamp;
-      void onNew5mClose(ctx);
     },
     () => {
       logger.error("KILL SWITCH TRIGGERED");
@@ -322,7 +363,7 @@ async function bootstrap() {
     },
     {
       auth: env.TRADING_MODE === "live",
-      onAuth: (success) => {
+      onAuth: (success: boolean) => {
         if (!success) return;
         ws?.subscribe("orders", ["all"]);
         ws?.subscribe("positions", ["all"]);
@@ -356,13 +397,13 @@ async function onNew5mClose(ctx: SymbolContext) {
 
   fsm.setMarketRegime(bias === "LONG" ? MarketRegime.TRENDING_BULL : MarketRegime.TRENDING_BEAR);
 
-  ctx.structure.update(closed15m);
+  ctx.structure.update(ctx.market.candles("15m"));
   if (ctx.structure.lastBias) {
     fsm.setStructureState(ctx.structure.lastBias === "BULLISH" ? StructureState.BULLISH_STRUCTURE : StructureState.BEARISH_STRUCTURE);
   }
 
   const atr = ctx.indicators.snapshot("15m").atr14;
-  ctx.smc.update(closed15m, ctx.structure.lastBreaks, ctx.structure.lastSwings, true, atr);
+  ctx.smc.update(ctx.market.candles("15m"), ctx.structure.lastBreaks, ctx.structure.lastSwings, true, atr);
 
   const riskCtx = await getRiskContext(ctx.symbol);
   if (riskCtx.equity <= 0) {
@@ -372,6 +413,32 @@ async function onNew5mClose(ctx: SymbolContext) {
   }
 
   const signal = await runStrategy(ctx.market, ctx.indicators, ctx.structure, ctx.smc);
+  
+  // AI Market Pulse - qualitatively check market every 15m candle close
+  // even if no system signal exists. This provides continuous "AI Insights" dashboard feed.
+  const pulseInput: AIVetoInput = {
+    intent: signal ? "ENTRY" : "PULSE",
+    symbol: ctx.symbol,
+    lastPrice: ctx.market.lastPrice(),
+    side: bias === "LONG" ? "LONG" : "SHORT",
+    timeframeBias: {
+      htf: bias === "LONG" ? "BULL" : "BEAR",
+      rsi: ctx.indicators.snapshot("15m").rsi14 ?? 50,
+      emaSlope: "FLAT",
+    },
+    setupQuality: signal ? { score: signal.score, reasons: signal.reasons } : undefined,
+    volatility: { atr: atr ?? 0, atrPercentile: 50 },
+    indicators: {
+      ema20: ctx.indicators.snapshot("15m").ema20 ?? 0,
+      ema200: ctx.indicators.snapshot("15m").ema200 ?? 0,
+      vwap: ctx.indicators.snapshot("15m").vwap ?? 0,
+    },
+    marketContext: { session: "ASIA" },
+  };
+
+  const veto = await aiVeto(aiClient, pulseInput);
+  pushAiAnalysis(ctx.symbol, pulseInput.intent, veto.allowed, veto.reason);
+
   if (!signal) {
     fsm.setSignalState(SignalState.IDLE);
     return;
@@ -379,19 +446,7 @@ async function onNew5mClose(ctx: SymbolContext) {
 
   fsm.setSignalState(SignalState.READY_TO_EXECUTE);
 
-  const veto = await aiVeto(aiClient, {
-    symbol: ctx.symbol,
-    bias: bias as any,
-    intent: "ENTRY",
-    context: {
-      price: ctx.market.lastPrice(),
-      structure: ctx.structure.lastBias ?? "NONE",
-      smcScore: signal.score,
-      reasons: signal.reasons,
-    }
-  });
-
-  if (veto.action === "BLOCK") {
+  if (!veto.allowed) {
     logger.warn(`[ARES.AI] Veto BLOCK for ${ctx.symbol}: ${veto.reason}`);
     return;
   }
@@ -414,8 +469,8 @@ async function onNew5mClose(ctx: SymbolContext) {
 }
 
 function handleTickerMessage(msg: TickerMessage) {
-  if (!msg.symbol || msg.price == null) return;
-  const price = typeof msg.price === "string" ? Number(msg.price) : msg.price;
+  const price = tickerPrice(msg);
+  if (price == null || !msg.symbol) return;
   watchlistLtps.set(msg.symbol, price);
   const ctx = symbolContexts.get(msg.symbol);
   if (ctx) ctx.market.ingestTick(price, 0, Date.now());
