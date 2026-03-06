@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ARES | Deterministic State Architecture</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="glass-bg"></div>
+
+    <header>
+        <div class="logo">
+            <span class="ares-text">ARES</span>
+            <span class="sub-text">Finite State Machine</span>
+        </div>
+        <div class="system-status">
+            <div class="status-indicator" id="global-status"></div>
+            <span id="system-state-text">SYSTEM.RUNNING</span>
+        </div>
+    </header>
+
+    <main>
+        <section class="state-domains">
+            <div class="section-header">
+                <h2>6 Independent State Machines</h2>
+                <p>Deterministic transitions for institutional-grade execution</p>
+            </div>
+
+            <div class="grid-container">
+                <div class="card" id="card-system">
+                    <h3>1. System lifecycle</h3>
+                    <div class="state-list" id="list-system"></div>
+                </div>
+                <div class="card" id="card-regime">
+                    <h3>2. Market regime</h3>
+                    <div class="state-list" id="list-regime"></div>
+                </div>
+                <div class="card" id="card-structure">
+                    <h3>3. Market structure</h3>
+                    <div class="state-list" id="list-structure"></div>
+                </div>
+                <div class="card" id="card-signal">
+                    <h3>4. Signal lifecycle</h3>
+                    <div class="state-list" id="list-signal"></div>
+                </div>
+                <div class="card" id="card-position">
+                    <h3>5. Position lifecycle</h3>
+                    <div class="state-list" id="list-position"></div>
+                </div>
+                <div class="card" id="card-risk">
+                    <h3>6. Risk protection</h3>
+                    <div class="state-list" id="list-risk"></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="high-level-flow">
+            <div class="section-header">
+                <h2>High-Level Execution Flow</h2>
+                <p>The progression of a perfect trade</p>
+            </div>
+            <div class="flow-container" id="flow-diagram">
+                <!-- SVG or JS managed flow will go here -->
+            </div>
+        </section>
+
+        <section class="signal-taxonomy">
+            <div class="section-header">
+                <h2>Trade Signal Taxonomy</h2>
+                <p>Canonical archetypes emitted by ARES</p>
+            </div>
+            <div class="taxonomy-grid" id="taxonomy-grid"></div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <p>ARES Trading Engine | Deterministic | Scalable | Safe</p>
+            <p class="timestamp" id="footer-time"></p>
+        </div>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>
