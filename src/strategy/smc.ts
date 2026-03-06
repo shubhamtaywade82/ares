@@ -92,9 +92,14 @@ export class SmcAnalyzer {
     this.checkMitigation(normalized);
     this.expireSweeps();
 
-    // Displacement detection (requires ATR)
+    // Displacement detection (requires ATR + SMC context)
     if (atr !== undefined && atr > 0) {
-      this.displacementDetector.detect(normalized, atr, swings);
+      const currentBarIndex = this.barIndex(this.lastProcessedTimestamp);
+      this.displacementDetector.detect(normalized, atr, swings, {
+        fvgs: this.fvgs.filter((f) => !f.isFilled),
+        sweeps: this.sweeps,
+        currentBarIndex,
+      });
     }
   }
 
