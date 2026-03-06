@@ -1,5 +1,6 @@
 import "dotenv/config";
 import http from "http";
+import { WebSocketServer } from "ws";
 import { logger } from "./utils/logger.js";
 import { ARESStateMachine } from "./state/machine.js";
 import {
@@ -155,6 +156,24 @@ function countOpenTradesBySymbol(symbol: string): number {
 }
 
 const API_PORT = 3001;
+
+async function getStatePayload(): Promise<object> {
+  const riskCtx = await getRiskContext("BTCUSD");
+  const snapshot = fsm.getSnapshot();
+  return {
+    ...snapshot,
+    portfolio: {
+      balance: riskCtx.equity,
+      available: riskCtx.availableBalance,
+      totalPnl: pnl.value,
+      dailyPnl: riskCtx.dailyPnl,
+      winRate: tradeJournal.stats.winRate,
+    },
+    activePositions: Array.from(activePositions.values()),
+    history: tradeJournal.history.slice(-10),
+  };
+}
+
 const stateServer = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -168,22 +187,7 @@ const stateServer = http.createServer(async (req, res) => {
 
   if (req.url === "/api/state") {
     try {
-      const riskCtx = await getRiskContext("BTCUSD");
-      const snapshot = fsm.getSnapshot();
-
-      const data = {
-        ...snapshot,
-        portfolio: {
-          balance: riskCtx.equity,
-          available: riskCtx.availableBalance,
-          totalPnl: pnl.value,
-          dailyPnl: riskCtx.dailyPnl,
-          winRate: tradeJournal.stats.winRate,
-        },
-        activePositions: Array.from(activePositions.values()),
-        history: tradeJournal.history.slice(-10),
-      };
-
+      const data = await getStatePayload();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(data));
     } catch (err) {
@@ -196,6 +200,8 @@ const stateServer = http.createServer(async (req, res) => {
     res.end();
   }
 });
+
+const wss = new WebSocketServer({ server: stateServer });
 
 function normalizeSymbols(): string[] {
   const raw = env.DELTA_PRODUCT_SYMBOL;
@@ -245,6 +251,16 @@ function scheduleDailyPnlReset() {
 async function bootstrap() {
   stateServer.listen(API_PORT, "0.0.0.0", () => {
     logger.info(`[ARES.API] State server listening on 0.0.0.0:${API_PORT}`);
+    setInterval(() => {
+      getStatePayload()
+        .then((data) => {
+          const payload = JSON.stringify(data);
+          for (const client of wss.clients) {
+            if (client.readyState === 1) client.send(payload);
+          }
+        })
+        .catch((err) => logger.error(err, "[ARES.API] WebSocket state broadcast failed"));
+    }, 1000);
   });
 
   if (env.TRADING_MODE === "paper") {

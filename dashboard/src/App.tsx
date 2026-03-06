@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Activity,
@@ -266,41 +266,64 @@ function App() {
   });
 
   const [error, setError] = useState<string | null>(null);
+  const cancelledRef = useRef(false);
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const res = await fetch('http://localhost:3001/api/state');
-        if (!res.ok) throw new Error('API Unreachable');
-        const data = await res.json();
+    cancelledRef.current = false;
+    const apiHost = import.meta.env.VITE_ARES_API_URL ?? 'http://localhost:3001';
+    const wsUrl = apiHost.replace(/^http/, 'ws');
+    let ws: WebSocket;
+    let reconnectTimeout: ReturnType<typeof setTimeout>;
 
-        setState({
-          snapshot: {
-            system: data.system,
-            regime: data.regime,
-            structure: data.structure,
-            signal: data.signal,
-            position: data.position,
-            risk: data.risk,
-            timestamp: new Date(data.timestamp).toLocaleTimeString()
-          },
-          portfolio: data.portfolio,
-          activePositions: data.activePositions,
-          history: data.history
-        });
+    function connect() {
+      if (cancelledRef.current) return;
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        if (cancelledRef.current) {
+          ws.close();
+          return;
+        }
         setError(null);
-      } catch (err) {
+      };
+      ws.onmessage = (event) => {
+        if (cancelledRef.current) return;
+        try {
+          const data = JSON.parse(event.data);
+          setState({
+            snapshot: {
+              system: data.system,
+              regime: data.regime,
+              structure: data.structure,
+              signal: data.signal,
+              position: data.position,
+              risk: data.risk,
+              timestamp: new Date(data.timestamp).toLocaleTimeString()
+            },
+            portfolio: data.portfolio,
+            activePositions: data.activePositions,
+            history: data.history
+          });
+        } catch {
+          // ignore invalid JSON
+        }
+      };
+      ws.onerror = () => {
+        if (!cancelledRef.current) setError('ARES Engine Offline');
+      };
+      ws.onclose = () => {
+        if (cancelledRef.current) return;
         setError('ARES Engine Offline');
-        setState(prev => ({
-          ...prev,
-          snapshot: { ...prev.snapshot, system: "ERROR" }
-        }));
-      }
-    };
+        reconnectTimeout = setTimeout(connect, 3000);
+      };
+    }
 
-    fetchData();
-    const interval = setInterval(fetchData, 1000);
-    return () => clearInterval(interval);
+    connect();
+    return () => {
+      cancelledRef.current = true;
+      clearTimeout(reconnectTimeout);
+      if (ws?.readyState === WebSocket.OPEN) ws.close();
+    };
   }, []);
 
   const { snapshot, portfolio, activePositions, history } = state;
@@ -342,9 +365,14 @@ function App() {
 
       <main className="flex-1 max-w-[1800px] mx-auto w-full px-8 py-8 flex flex-col gap-8">
         {error && (
-          <div className="glass p-4 border-l-4 border-l-rose-500 bg-rose-500/10 flex items-center gap-3 animate-pulse">
-            <AlertCircle className="text-rose-500" size={20} />
-            <span className="text-sm font-bold text-rose-500 uppercase tracking-widest">{error}</span>
+          <div className="glass p-4 border-l-4 border-l-rose-500 bg-rose-500/10 flex flex-col gap-1">
+            <div className="flex items-center gap-3">
+              <AlertCircle className="text-rose-500 shrink-0" size={20} />
+              <span className="text-sm font-bold text-rose-500 uppercase tracking-widest">{error}</span>
+            </div>
+            <p className="text-xs text-slate-400 pl-8">
+              Start the ARES bot in another terminal: <code className="bg-black/30 px-1.5 py-0.5 rounded">npm run start:paper</code> or <code className="bg-black/30 px-1.5 py-0.5 rounded">npm run dev</code>. Reconnecting every 3s…
+            </p>
           </div>
         )}
 
