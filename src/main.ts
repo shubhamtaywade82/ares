@@ -25,7 +25,6 @@ import { computeHTFBias } from "./strategy/bias.htf.js";
 import { computeTargets } from "./execution/sltp.manager.js";
 import { createAIClientFromEnv } from "./ai/ai.client.js";
 import { aiVeto } from "./ai/ai.veto.js";
-import { AIIntent } from "./ai/ai.types.js";
 import { OrderStore } from "./state/order.store.js";
 import { OrderManager } from "./execution/order.manager.js";
 import { RiskContext } from "./risk/types.js";
@@ -367,7 +366,7 @@ async function onNew5mClose(ctx: SymbolContext) {
   const veto = await aiVeto(aiClient, {
     symbol: ctx.symbol,
     bias: bias as any,
-    intent: AIIntent.ENTRY,
+    intent: "ENTRY",
     context: {
       price: ctx.market.lastPrice(),
       structure: ctx.structure.lastBias ?? "NONE",

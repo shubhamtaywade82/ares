@@ -89,6 +89,8 @@ npm run build
 npm run start:paper # Start in background (Paper Mode)
 npm run start:live  # Start in background (Live Mode)
 npm run logs        # View real-time decisions
+npm run ui          # Start the web dashboard (Vite dev server)
+npm run start:paper:ui  # Start paper bot then open UI in this terminal
 npm run monitor     # View CPU/Memory dashboard
 npm run stop        # Stop the background process
 ```
