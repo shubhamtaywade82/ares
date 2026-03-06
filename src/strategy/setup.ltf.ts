@@ -2,7 +2,7 @@ import { MarketCache } from "../market/market.cache.js";
 import { IndicatorCache } from "../indicators/indicator.cache.js";
 import { Bias, SetupSignal } from "./types.js";
 import { StructureAnalyzer } from "./structure.js";
-import { LiquiditySweep, SmcAnalyzer } from "./smc.js";
+import { LiquiditySweep, SmcAnalyzer, DisplacementEvent } from "./smc.js";
 import { detectPattern } from "./patterns.js";
 
 const SWEEP_PROXIMITY_PCT = 0.015;
@@ -108,7 +108,34 @@ export function detectLTFSetup(
     }
   }
 
-  // 3. Fallback: Traditional Pullback Confluence
+  // 3. Displacement Confluence
+  if (smc) {
+    const displacement = smc.lastDisplacement;
+    if (displacement && displacement.strength >= 2) {
+      const directionAligned =
+        (bias === "LONG" && displacement.type === "BULLISH") ||
+        (bias === "SHORT" && displacement.type === "BEARISH");
+
+      if (directionAligned) {
+        score += 4;
+        reasons.push(`Displacement trigger (str=${displacement.strength.toFixed(1)})`);
+
+        // Check if price is in the pullback zone
+        const zone = displacement.pullbackZone;
+        const inPullbackZone =
+          displacement.type === "BULLISH"
+            ? last.low <= zone.entry && last.close >= zone.stop
+            : last.high >= zone.entry && last.close <= zone.stop;
+
+        if (inPullbackZone) {
+          score += 3;
+          reasons.push("In displacement pullback zone");
+        }
+      }
+    }
+  }
+
+  // 4. Fallback: Traditional Pullback Confluence
   if (ind.ema20 !== undefined && ind.vwap !== undefined) {
     const nearValue =
       Math.abs(last.close - ind.ema20) <= ind.atr14 * 0.5 ||

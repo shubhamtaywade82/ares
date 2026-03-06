@@ -797,7 +797,8 @@ async function onNew5mClose(ctx: SymbolContext) {
     }
 
     ctx.structure.update(closed15m);
-    ctx.smc.update(closed15m, ctx.structure.lastBreaks, ctx.structure.lastSwings, true);
+    const atr15m = ctx.indicators.snapshot("15m").atr14;
+    ctx.smc.update(closed15m, ctx.structure.lastBreaks, ctx.structure.lastSwings, true, atr15m);
 
     // --- Active Position Management ---
     const activePos = positions.getByProduct(ctx.productId, ctx.symbol);

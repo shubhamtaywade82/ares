@@ -1,5 +1,8 @@
 import { DeltaCandle } from "../delta/types.js";
 import { StructureBreak, SwingPoint } from "./structure.js";
+import { DisplacementDetector, DisplacementEvent } from "./displacement.detector.js";
+
+export type { DisplacementEvent } from "./displacement.detector.js";
 
 export interface FVG {
   type: "BULLISH" | "BEARISH";
@@ -59,6 +62,7 @@ export class SmcAnalyzer {
   private fvgs: FVG[] = [];
   private obs: OrderBlock[] = [];
   private sweeps: LiquiditySweep[] = [];
+  private displacementDetector = new DisplacementDetector();
   private lastProcessedTimestamp = 0;
   private resolutionMs: number;
 
@@ -70,7 +74,8 @@ export class SmcAnalyzer {
     candles: readonly DeltaCandle[],
     breaks: StructureBreak[],
     swings: SwingPoint[] = [],
-    isLive = true
+    isLive = true,
+    atr?: number
   ) {
     const normalized = candles.map((c) => ({ ...c, timestamp: this.normalizeTimestampMs(c.timestamp) }));
     const last = normalized.at(-1);
@@ -86,6 +91,11 @@ export class SmcAnalyzer {
     this.detectLiquiditySweeps(normalized, swings);
     this.checkMitigation(normalized);
     this.expireSweeps();
+
+    // Displacement detection (requires ATR)
+    if (atr !== undefined && atr > 0) {
+      this.displacementDetector.detect(normalized, atr, swings);
+    }
   }
 
   get lastFVGs(): FVG[] {
@@ -102,6 +112,11 @@ export class SmcAnalyzer {
 
   get activeSweep(): LiquiditySweep | undefined {
     return this.sweeps.at(-1);
+  }
+
+  /** Most recent displacement event, or null if none detected. */
+  get lastDisplacement(): DisplacementEvent | null {
+    return this.displacementDetector.lastEvent();
   }
 
   activeSweepMetrics(): { ageBars: number; ageMinutes: number; volumeRatio: number } | null {
