@@ -16,6 +16,7 @@
     "start:live": "npx pm2 delete ares-bot 2>/dev/null; npx pm2 start ecosystem.config.cjs --env live",
     "stop": "npx pm2 stop ares-bot",
     "logs": "npx pm2 logs ares-bot",
+    "reset:paper": "npx pm2 stop ares-bot 2>/dev/null; rm -rf data; rm -f logs/trades.ndjson",
     "ui": "npm run dev --prefix dashboard",
     "start:paper:ui": "npm run start:paper && npm run ui",
     "test": "npm run build && node --test dist/**/*.test.js"

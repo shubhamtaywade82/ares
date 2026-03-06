@@ -93,6 +93,7 @@ npm run ui          # Start the web dashboard (Vite dev server)
 npm run start:paper:ui  # Start paper bot then open UI in this terminal
 npm run monitor     # View CPU/Memory dashboard
 npm run stop        # Stop the background process
+npm run reset:paper # Reset paper balance, positions & trade journal (stop + delete data/ and logs/trades.ndjson)
 ```
 
 
