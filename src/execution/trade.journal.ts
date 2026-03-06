@@ -4,11 +4,22 @@ import { logger } from "../utils/logger.js";
 import { TradeRecord } from "./trade.types.js";
 
 export class TradeJournal {
+  public history: TradeRecord[] = [];
+
+  public get stats() {
+    const wins = this.history.filter((r) => r.realizedPnl > 0).length;
+    const total = this.history.length;
+    return {
+      winRate: total > 0 ? wins / total : 0,
+    };
+  }
+
   constructor(private ndJsonPath = "logs/trades.ndjson") {
     mkdirSync(dirname(this.ndJsonPath), { recursive: true });
   }
 
   write(record: TradeRecord): void {
+    this.history.push(record);
     this.appendDurable(`${JSON.stringify(record)}\n`);
     logger.info(
       `[ARES.EXECUTION] Journal written — ${record.symbol} ${record.exitReason} pnl:${record.realizedPnl.toFixed(2)}`

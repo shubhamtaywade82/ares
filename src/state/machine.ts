@@ -6,7 +6,7 @@ import {
   PositionState,
   RiskState,
   AresSnapshot
-} from "../types/ares.state";
+} from "../types/ares.state.js";
 
 /**
  * ARES Finite State Machine
@@ -151,7 +151,11 @@ export class ARESStateMachine {
         return [SignalState.ORDER_FILLED, SignalState.ORDER_CANCELLED].includes(next);
 
       case SignalState.ORDER_FILLED:
-        return next === SignalState.IDLE;
+        return (next as any) === SignalState.IDLE;
+
+      case SignalState.INVALIDATED:
+      case SignalState.ORDER_CANCELLED:
+        return (next as any) === SignalState.IDLE;
 
       default:
         return false;

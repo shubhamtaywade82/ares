@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { SystemState, MarketRegime, StructureState, SignalState, PositionState, RiskState } from "./ares.state";
-import { SignalType } from "./ares.signal";
+import { SystemState, MarketRegime, StructureState, SignalState, PositionState, RiskState } from "./ares.state.js";
+import { SignalType } from "./ares.signal.js";
 
 /**
  * Zod Schemas for ARES Runtime Validation

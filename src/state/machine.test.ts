@@ -1,7 +1,7 @@
-import { ARESStateMachine } from "./machine";
-import { SystemState, SignalState, RiskState, MarketRegime } from "../types/ares.state";
-import { SignalType } from "../types/ares.signal";
-import { ARESSignalValidator } from "../types/ares.schema";
+import { ARESStateMachine } from "./machine.js";
+import { SystemState, SignalState, RiskState, MarketRegime } from "../types/ares.state.js";
+import { SignalType } from "../types/ares.signal.js";
+import { ARESSignalValidator } from "../types/ares.schema.js";
 
 /**
  * Verification Script for Refined ARES Architecture
@@ -95,7 +95,7 @@ function runTests() {
   if (result.success) {
     console.log("✅ Valid signal parsed successfully.\n");
   } else {
-    console.log("❌ Signal validation failed:", result.error.errors);
+    console.log("❌ Signal validation failed:", (result as any).error);
   }
 
   // Test 7: No Trade Signal Validation
@@ -115,7 +115,7 @@ function runTests() {
   if (noTradeResult.success) {
     console.log("✅ No Trade signal parsed successfully.\n");
   } else {
-    console.log("❌ No Trade signal validation failed:", noTradeResult.error.errors);
+    console.log("❌ No Trade signal validation failed:", (noTradeResult as any).error);
   }
 
   console.log("🏁 Verification Complete.");

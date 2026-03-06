@@ -1,4 +1,4 @@
-import { MarketRegime } from "./ares.state";
+import { MarketRegime } from "./ares.state.js";
 
 /**
  * TRADE SIGNAL TAXONOMY
