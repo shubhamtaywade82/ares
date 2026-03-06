@@ -274,6 +274,19 @@ function App() {
     const wsUrl = apiHost.replace(/^http/, 'ws');
     let ws: WebSocket;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
+    let showErrorTimeout: ReturnType<typeof setTimeout>;
+
+    function scheduleOfflineMessage() {
+      clearTimeout(showErrorTimeout);
+      showErrorTimeout = setTimeout(() => {
+        if (!cancelledRef.current) setError('ARES Engine Offline');
+      }, 2000);
+    }
+
+    function clearOfflineMessage() {
+      clearTimeout(showErrorTimeout);
+      setError(null);
+    }
 
     function connect() {
       if (cancelledRef.current) return;
@@ -284,7 +297,7 @@ function App() {
           ws.close();
           return;
         }
-        setError(null);
+        clearOfflineMessage();
       };
       ws.onmessage = (event) => {
         if (cancelledRef.current) return;
@@ -309,11 +322,11 @@ function App() {
         }
       };
       ws.onerror = () => {
-        if (!cancelledRef.current) setError('ARES Engine Offline');
+        if (!cancelledRef.current) scheduleOfflineMessage();
       };
       ws.onclose = () => {
         if (cancelledRef.current) return;
-        setError('ARES Engine Offline');
+        scheduleOfflineMessage();
         reconnectTimeout = setTimeout(connect, 3000);
       };
     }
@@ -321,6 +334,7 @@ function App() {
     connect();
     return () => {
       cancelledRef.current = true;
+      clearTimeout(showErrorTimeout);
       clearTimeout(reconnectTimeout);
       if (ws?.readyState === WebSocket.OPEN) ws.close();
     };
