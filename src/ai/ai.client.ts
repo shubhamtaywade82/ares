@@ -40,6 +40,12 @@ export class AIClient {
     prompt: { role: string; content: string },
     timeoutMs = 120_000
   ): Promise<string> {
+    const MAX_CHARS = 4000;
+    if (prompt.content.length > MAX_CHARS) {
+      logger.warn(`[ARES.AI] Prompt exceeds ${MAX_CHARS} chars (${prompt.content.length}); truncating...`);
+      prompt.content = prompt.content.slice(0, MAX_CHARS) + "\n...[TRUNCATED]";
+    }
+
     // Sequential queue to prevent slamming local LLM
     return new Promise((resolve, reject) => {
       this.queue = this.queue.then(async () => {

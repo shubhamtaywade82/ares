@@ -123,14 +123,22 @@ function scheduleDailyPnlReset() {
 async function performEmergencyFlatten(reason: KillReason) {
   logger.error(`[ARES.KILL] Emergency flatten start: ${reason}`);
   try {
-    await rest.cancelAllOrders();
+    if (env.TRADING_MODE === "paper" && paper) {
+      paper.cancelAllOrders();
+    } else {
+      await rest.cancelAllOrders();
+    }
     logger.error("[ARES.KILL] cancelAllOrders completed");
   } catch (error) {
     logger.error(error, "[ARES.KILL] cancelAllOrders failed:");
   }
 
   try {
-    await rest.closeAllPositions();
+    if (env.TRADING_MODE === "paper" && paper) {
+      paper.closeAllPositions();
+    } else {
+      await rest.closeAllPositions();
+    }
     logger.error("[ARES.KILL] closeAllPositions completed");
   } catch (error) {
     logger.error(error, "[ARES.KILL] closeAllPositions failed:");
@@ -207,17 +215,32 @@ async function persistState() {
 
 process.on("SIGINT", async () => {
   await persistState();
-  KillSwitch.trigger(KillReason.MANUAL);
+  try {
+    KillSwitch.trigger(KillReason.MANUAL);
+  } catch (e) {
+    if (typeof e === "string" && e.startsWith("KILL_HALT")) return;
+    throw e;
+  }
 });
 
 process.on("SIGTERM", async () => {
   await persistState();
-  KillSwitch.trigger(KillReason.MANUAL);
+  try {
+    KillSwitch.trigger(KillReason.MANUAL);
+  } catch (e) {
+    if (typeof e === "string" && e.startsWith("KILL_HALT")) return;
+    throw e;
+  }
 });
 
 process.on("SIGUSR1", async () => {
   await persistState();
-  KillSwitch.trigger(KillReason.MANUAL);
+  try {
+    KillSwitch.trigger(KillReason.MANUAL);
+  } catch (e) {
+    if (typeof e === "string" && e.startsWith("KILL_HALT")) return;
+    throw e;
+  }
 });
 
 function normalizeSymbols(): string[] {
@@ -571,10 +594,10 @@ async function bootstrap() {
     paper.setOnOrderUpdate(handleUpdate);
   }
 
-  if (env.TRADING_MODE === "live") {
-    pendingExpiryTimer = setInterval(() => {
-      void expireStalePendingEntries();
-    }, 60_000);
+  if (env.TRADING_MODE === "paper") {
+    setInterval(() => {
+      logPositionSummary();
+    }, 30_000);
   }
 
   ws.connect();
@@ -1078,6 +1101,68 @@ function handlePositionUpdate(msg: any) {
       `[ARES.MARKET] Position update ${symbol} size=${size} entry=${entry ?? "?"}`
     );
   }
+}
+
+function logPositionSummary() {
+  if (env.TRADING_MODE !== "paper") return;
+  const allPos = positions.all();
+  if (allPos.length === 0) return;
+
+  logger.info("");
+  logger.info("=".repeat(60));
+  logger.info(
+    `[ARES.PAPER.SUMMARY] ${new Date().toLocaleTimeString()} | Realized PnL: ${pnl.value.toFixed(
+      2
+    )} INR`
+  );
+  logger.info("-".repeat(60));
+
+  let totalUnrealizedPnlINR = 0;
+
+  for (const pos of allPos) {
+    const symbol = pos.productSymbol?.toUpperCase();
+    if (!symbol) continue;
+
+    const price = watchlistLtps.get(symbol);
+    if (price == null) continue;
+
+    const ctx = symbolContexts.get(symbol);
+    const contractValueRaw =
+      ctx?.cachedProduct?.contract_value ?? pos.cachedProduct?.contract_value;
+    const contractValue =
+      typeof contractValueRaw === "string"
+        ? Number(contractValueRaw)
+        : typeof contractValueRaw === "number"
+          ? contractValueRaw
+          : 1;
+
+    const pnlUSD =
+      pos.side === "LONG"
+        ? (price - pos.entryPrice) * pos.qty * contractValue
+        : (pos.entryPrice - price) * pos.qty * contractValue;
+
+    const pnlINR = pnlUSD * RISK_CONFIG.USDINR;
+    totalUnrealizedPnlINR += pnlINR;
+
+    const precision = symbol === "XRPUSD" ? 4 : 2;
+    const pnlSign = pnlINR >= 0 ? "+" : "";
+
+    logger.info(
+      `  ${symbol.padEnd(7)} | ${pos.side.padEnd(5)} | Entry: ${pos.entryPrice.toFixed(
+        precision
+      )} | ` +
+        `Price: ${price.toFixed(precision)} | PnL: ${pnlSign}${pnlINR.toFixed(2)} INR`
+    );
+  }
+
+  logger.info("-".repeat(60));
+  logger.info(
+    `Total Unrealized: ${
+      totalUnrealizedPnlINR >= 0 ? "+" : ""
+    }${totalUnrealizedPnlINR.toFixed(2)} INR`
+  );
+  logger.info("=".repeat(60));
+  logger.info("");
 }
 
 function logPaperPosition(ctx: SymbolContext, price: number) {

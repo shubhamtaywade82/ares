@@ -4,12 +4,12 @@ import { createAIClientFromEnv } from "./ai.client.js";
 async function benchmark() {
   const client = createAIClientFromEnv();
 
-  // We'll test the models the user has available and were fast enough
-  const models = ["qwen2.5:0.5b", "llama3.2:1b", "qwen3:0.6b"];
-  const sizes = [500, 1000, 2000, 4000];
+  // Best picks from available models
+  const models = ["qwen2.5:0.5b", "qwen3:0.6b", "llama3.2:latest"];
+  const sizes = [1000, 2000, 4000, 8000];
 
-  console.log("--- AI Multi-Model Benchmark (Ollama Lib) ---");
-  console.log("----------------------------------------------");
+  console.log("--- AI Targeted Model Benchmark ---");
+  console.log("-----------------------------------");
 
   for (const model of models) {
     console.log(`\nTesting Model: ${model}`);
@@ -26,7 +26,7 @@ async function benchmark() {
 
       const start = Date.now();
       try {
-        await client.analyze(prompt, 60000);
+        await client.analyze(prompt, 90000);
         const duration = Date.now() - start;
         console.log(`  Size: ${size.toString().padStart(5)} chars | Latency: ${(duration / 1000).toFixed(2)}s`);
       } catch (error: any) {

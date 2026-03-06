@@ -372,6 +372,12 @@ export class PaperExecutor {
     for (const pos of this.positions.all()) {
       this.closePosition(pos.productId, pos.productSymbol, price);
     }
+    if (this.onStateChange) Promise.resolve(this.onStateChange()).catch(console.error);
+  }
+
+  cancelAllOrders() {
+    this.orders.clear();
+    if (this.onStateChange) Promise.resolve(this.onStateChange()).catch(console.error);
   }
 
   cancel(orderId: string) {
