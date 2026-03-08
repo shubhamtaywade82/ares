@@ -172,6 +172,80 @@ export class DisplacementDetector {
     return this.event;
   }
 
+  /**
+   * Evaluate a forming (active) candle for institutional displacement.
+   * This allows triggering an entry BEFORE the candle closes if the momentum is strong enough.
+   */
+  detectActive(
+    currentPrice: number,
+    currentVolume: number,
+    candles: readonly DeltaCandle[],
+    atr: number,
+    swings: readonly SwingPoint[],
+    avgVolume?: number,
+    smcCtx?: SmcContext
+  ): DisplacementEvent | null {
+    if (candles.length < AVG_VOLUME_LOOKBACK || atr <= 0) return null;
+
+    const lastClosed = candles[candles.length - 1]!;
+    const high = Math.max(lastClosed.high, currentPrice);
+    const low = Math.min(lastClosed.low, currentPrice);
+    const range = high - low;
+    if (range <= 0) return null;
+
+    const body = Math.abs(currentPrice - lastClosed.close);
+    const bodyRatio = body / range;
+    const direction: DisplacementDirection = currentPrice > lastClosed.close ? "BULLISH" : "BEARISH";
+    const closePosition = (currentPrice - low) / range;
+
+    const actualAvgVol = avgVolume ?? this.averageVolume(candles);
+    
+    const activeCandle: DeltaCandle = {
+      timestamp: Date.now(),
+      open: lastClosed.close,
+      high,
+      low,
+      close: currentPrice,
+      volume: currentVolume,
+    };
+
+    const hadSweep = this.hadRecentSweep(smcCtx);
+    if (!hadSweep) return null;
+
+    if (!this.breaksStructure(activeCandle, direction, swings)) return null;
+    if (bodyRatio < MIN_BODY_RATIO) return null;
+    if (range < atr * ATR_RANGE_MULTIPLIER) return null;
+    
+    if (actualAvgVol > 0 && currentVolume < actualAvgVol * VOLUME_MULTIPLIER) return null;
+
+    const closeNearExtreme = direction === "BULLISH" 
+      ? closePosition > CLOSE_POSITION_THRESHOLD 
+      : closePosition < (1 - CLOSE_POSITION_THRESHOLD);
+    if (!closeNearExtreme) return null;
+
+    const prevCandle = lastClosed;
+    const hasActiveGap = direction === "BULLISH" 
+      ? activeCandle.low > prevCandle.high 
+      : activeCandle.high < prevCandle.low;
+    
+    if (!hasActiveGap && !this.hasFVGInDirection(direction, smcCtx)) return null;
+
+    const strength = range / atr;
+    const pullbackZone = this.computePullbackZone(activeCandle, direction, smcCtx);
+
+    return {
+      type: direction,
+      strength,
+      bodyRatio,
+      closePosition,
+      hadSweep,
+      hadFVG: true,
+      candle: activeCandle,
+      pullbackZone,
+      timestamp: activeCandle.timestamp,
+    };
+  }
+
   /** Reset detector state. */
   reset(): void {
     this.event = null;

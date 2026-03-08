@@ -107,6 +107,47 @@ export class StructureAnalyzer {
       const type: StructureType = this.bias === "BULLISH" ? "CHOCH" : "BOS";
       this.addBreak({ type, side: "DOWN", price: lastLow.price, timestamp: lastCandle.timestamp });
     }
+
+    this.detectEqualHighs(candles);
+    this.detectEqualLows(candles);
+  }
+
+  private detectEqualHighs(candles: readonly DeltaCandle[]) {
+    if (this.swings.length < 2) return;
+    const highs = this.swings.filter(s => s.type === "HIGH").slice(-3);
+    if (highs.length < 2) return;
+
+    for (let i = 0; i < highs.length - 1; i++) {
+      for (let j = i + 1; j < highs.length; j++) {
+        const h1 = highs[i];
+        const h2 = highs[j];
+        if (h1 && h2) {
+          const diff = Math.abs(h1.price - h2.price) / h1.price;
+          if (diff < 0.001) {
+            // Equal highs detected (liquidity pool)
+          }
+        }
+      }
+    }
+  }
+
+  private detectEqualLows(candles: readonly DeltaCandle[]) {
+    if (this.swings.length < 2) return;
+    const lows = this.swings.filter(s => s.type === "LOW").slice(-3);
+    if (lows.length < 2) return;
+
+    for (let i = 0; i < lows.length - 1; i++) {
+      for (let j = i + 1; j < lows.length; j++) {
+        const l1 = lows[i];
+        const l2 = lows[j];
+        if (l1 && l2) {
+          const diff = Math.abs(l1.price - l2.price) / l1.price;
+          if (diff < 0.001) {
+            // Equal lows detected (liquidity pool)
+          }
+        }
+      }
+    }
   }
 
   private addBreak(brk: StructureBreak) {

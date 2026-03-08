@@ -316,3 +316,31 @@ test("lastEvent persists and reset clears", () => {
   detector.reset();
   assert.equal(detector.lastEvent(), null);
 });
+
+test("DisplacementDetector.detectActive correctly evaluates forming candle", () => {
+  const detector = new DisplacementDetector();
+  const atr = 2;
+  const candles = buildCandles(AVG_VOLUME_LOOKBACK); // Current forming candle is NOT in this array
+  const lastClosed = candles[candles.length - 1]!;
+  
+  // Current price 106.5, volume 30
+  const currentPrice = 106.5;
+  const currentVolume = 30;
+  const swings = [swingHigh(104, AVG_VOLUME_LOOKBACK - 1)];
+  const smcCtx = validSmcContext("BULLISH", AVG_VOLUME_LOOKBACK);
+
+  const result = detector.detectActive(
+    currentPrice,
+    currentVolume,
+    candles,
+    atr,
+    swings,
+    10, // avgVolume
+    smcCtx
+  );
+
+  assert.notEqual(result, null);
+  assert.equal(result!.type, "BULLISH");
+  assert.equal(result!.candle.close, 106.5);
+  assert.ok(result!.strength > 3);
+});

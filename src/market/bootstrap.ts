@@ -8,10 +8,13 @@ export async function bootstrapMarket(
   symbol: string
 ) {
   const end = Math.floor(Date.now() / 1000);
-  const timeframes: Array<{ tf: "1m" | "5m" | "15m"; lookbackSeconds: number }> = [
+  const timeframes: Array<{ tf: "1m" | "5m" | "15m" | "1h" | "4h" | "1d"; lookbackSeconds: number }> = [
     { tf: "1m", lookbackSeconds: 60 * 60 * 6 },
     { tf: "5m", lookbackSeconds: 60 * 60 * 24 * 3 },
     { tf: "15m", lookbackSeconds: 60 * 60 * 24 * 7 },
+    { tf: "1h", lookbackSeconds: 60 * 60 * 24 * 14 },
+    { tf: "4h", lookbackSeconds: 60 * 60 * 24 * 30 },
+    { tf: "1d", lookbackSeconds: 60 * 60 * 24 * 90 },
   ];
 
   for (const { tf, lookbackSeconds } of timeframes) {

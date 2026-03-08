@@ -345,7 +345,6 @@ async function bootstrap() {
           const closed5m = ctx.market.lastClosed("5m");
           if (closed5m && closed5m.timestamp !== ctx.lastClosed5m) {
             ctx.lastClosed5m = closed5m.timestamp;
-            void onNew5mClose(ctx);
           }
         }
       }
@@ -382,13 +381,16 @@ async function bootstrap() {
   logger.info("[ARES.BOOT] System ready; transitioning to RUNNING");
   fsm.setSystemState(SystemState.RUNNING);
   ws.connect();
+
+  // 5-Second Scanner Loop
+  setInterval(async () => {
+    for (const ctx of symbolContexts.values()) {
+      await scanSymbol(ctx);
+    }
+  }, 5000);
 }
 
-async function onNew5mClose(ctx: SymbolContext) {
-  const closed15m = ctx.market.lastClosed("15m");
-  if (!closed15m || closed15m.timestamp === ctx.lastClosed15m) return;
-  ctx.lastClosed15m = closed15m.timestamp;
-
+async function scanSymbol(ctx: SymbolContext) {
   const bias = computeHTFBias(ctx.market, ctx.indicators);
   if (bias === "NONE") {
     fsm.setMarketRegime(MarketRegime.UNKNOWN);
@@ -397,61 +399,45 @@ async function onNew5mClose(ctx: SymbolContext) {
 
   fsm.setMarketRegime(bias === "LONG" ? MarketRegime.TRENDING_BULL : MarketRegime.TRENDING_BEAR);
 
-  ctx.structure.update(ctx.market.candles("15m"));
+  // Update structure and SMC context (15m execution TF)
+  const candles15m = ctx.market.candles("15m");
+  ctx.structure.update(candles15m);
+  
   if (ctx.structure.lastBias) {
     fsm.setStructureState(ctx.structure.lastBias === "BULLISH" ? StructureState.BULLISH_STRUCTURE : StructureState.BEARISH_STRUCTURE);
   }
 
   const atr = ctx.indicators.snapshot("15m").atr14;
-  ctx.smc.update(ctx.market.candles("15m"), ctx.structure.lastBreaks, ctx.structure.lastSwings, true, atr);
+  ctx.smc.update(candles15m, ctx.structure.lastBreaks, ctx.structure.lastSwings, true, atr);
 
-  const riskCtx = await getRiskContext(ctx.symbol);
-  if (riskCtx.equity <= 0) {
-    logger.warn("[ARES.RISK] Equity zero; blocking execution");
-    fsm.setRiskState(RiskState.NORMAL);
-    return;
-  }
-
-  const signal = await runStrategy(ctx.market, ctx.indicators, ctx.structure, ctx.smc);
+  // Check for ACTIVE candle displacement if in HTF supply/demand
+  const currentPrice = ctx.market.lastPrice();
+  const currentVolume = ctx.market.lastClosed("1m")?.volume ?? 0; // Rough approximation of current 15m volume expansion
   
-  // AI Market Pulse - qualitatively check market every 15m candle close
-  // even if no system signal exists. This provides continuous "AI Insights" dashboard feed.
-  const pulseInput: AIVetoInput = {
-    intent: signal ? "ENTRY" : "PULSE",
-    symbol: ctx.symbol,
-    lastPrice: ctx.market.lastPrice(),
-    side: bias === "LONG" ? "LONG" : "SHORT",
-    timeframeBias: {
-      htf: bias === "LONG" ? "BULL" : "BEAR",
-      rsi: ctx.indicators.snapshot("15m").rsi14 ?? 50,
-      emaSlope: "FLAT",
-    },
-    setupQuality: signal ? { score: signal.score, reasons: signal.reasons } : undefined,
-    volatility: { atr: atr ?? 0, atrPercentile: 50 },
-    indicators: {
-      ema20: ctx.indicators.snapshot("15m").ema20 ?? 0,
-      ema200: ctx.indicators.snapshot("15m").ema200 ?? 0,
-      vwap: ctx.indicators.snapshot("15m").vwap ?? 0,
-    },
-    marketContext: { session: "ASIA" },
-  };
+  const activeDisplacement = ctx.smc.lastDisplacement === null ? 
+    (ctx.smc as any).displacementDetector.detectActive(
+      currentPrice, 
+      currentVolume, 
+      candles15m, 
+      atr ?? 0, 
+      ctx.structure.lastSwings,
+      undefined, // auto-compute avg vol
+      { fvgs: ctx.smc.lastFVGs, sweeps: ctx.smc.lastSweeps, currentBarIndex: candles15m.length }
+    ) : null;
 
-  const veto = await aiVeto(aiClient, pulseInput);
-  pushAiAnalysis(ctx.symbol, pulseInput.intent, veto.allowed, veto.reason);
-
-  if (!signal) {
-    fsm.setSignalState(SignalState.IDLE);
-    return;
+  if (activeDisplacement) {
+    logger.info(`[ARES.STRATEGY] ACTIVE displacement detected for ${ctx.symbol}: ${activeDisplacement.type}`);
+    fsm.setSignalState(SignalState.READY_TO_EXECUTE);
+    // Trigger execution logic here...
+    await executeEntry(ctx, bias, activeDisplacement);
   }
+}
 
-  fsm.setSignalState(SignalState.READY_TO_EXECUTE);
+async function executeEntry(ctx: SymbolContext, bias: string, displacement: any) {
+  const riskCtx = await getRiskContext(ctx.symbol);
+  if (riskCtx.equity <= 0) return;
 
-  if (!veto.allowed) {
-    logger.warn(`[ARES.AI] Veto BLOCK for ${ctx.symbol}: ${veto.reason}`);
-    return;
-  }
-
-  const stop = bias === "LONG" ? closed15m.low : closed15m.high;
+  const stop = displacement.pullbackZone.stop;
   const tp = computeTargets(ctx.market.lastPrice(), stop, bias as any, RISK_CONFIG.minRR);
 
   const set = await orderManager.execute({
@@ -462,7 +448,7 @@ async function onNew5mClose(ctx: SymbolContext) {
     qty: 1,
     stopPrice: stop,
     targetPrice: tp,
-    signalContext: { htfBias: bias, smcScore: signal.score, rr: RISK_CONFIG.minRR, reason: signal.reasons.join(" | ") }
+    signalContext: { htfBias: bias, smcScore: 0.8, rr: RISK_CONFIG.minRR, reason: "Active Displacement" }
   });
 
   if (set?.entryOrderId) fsm.setSignalState(SignalState.ORDER_PLACED);

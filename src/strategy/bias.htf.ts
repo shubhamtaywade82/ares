@@ -15,14 +15,19 @@ export function computeHTFBias(
     return env.FORCE_HTF_BIAS;
   }
 
-  // 1. Priority: Market Structure Bias
-  if (structure) {
-    const structuralBias = structure.lastBias;
-    if (structuralBias === "BULLISH") return "LONG";
-    if (structuralBias === "BEARISH") return "SHORT";
+  // 1. Structural Bias Check (Multi-TF)
+  const bias1d = computeStructuralBias(market, "1d");
+  const bias4h = computeStructuralBias(market, "4h");
+  const bias1h = computeStructuralBias(market, "1h");
+
+  if (bias1d === "BEARISH" && bias4h === "BEARISH" && bias1h === "BEARISH") {
+    return "SHORT";
+  }
+  if (bias1d === "BULLISH" && bias4h === "BULLISH" && bias1h === "BULLISH") {
+    return "LONG";
   }
 
-  // 2. Fallback: Traditional Indicator Bias
+  // 2. Fallback: Traditional Indicator Bias on 15m
   const candles = market.candles("15m");
   const ind = indicators.snapshot("15m");
 
@@ -38,6 +43,32 @@ export function computeHTFBias(
   if (ema200Gap > 0.003 && ind.rsi14 >= 53) return "LONG";
   if (ema200Gap < -0.003 && ind.rsi14 <= 47) return "SHORT";
 
-  // Neutral band or conflicting signals
   return "NONE";
+}
+
+/**
+ * Quick structural bias check for a specific timeframe without full StructureAnalyzer state.
+ * Uses EMA200 for simplicity as a proxy for structural trend in HTF if StructureAnalyzer is only for execution TF.
+ */
+function computeStructuralBias(market: MarketCache, tf: string): "BULLISH" | "BEARISH" | "NONE" {
+  const candles = market.candles(tf as any);
+  if (candles.length < 200) return "NONE";
+  
+  const last = candles.at(-1)!;
+  // Simple EMA200 proxy for HTF structure if we don't want to maintain 4 separate StructureAnalyzers yet
+  // In a more complex setup, we'd have a StructureAnalyzer per timeframe.
+  // For now, let's use a simple price vs SMA cross for HTF.
+  let sum = 0;
+  let count = 0;
+  for (let i = candles.length - 200; i < candles.length; i++) {
+    const c = candles[i];
+    if (c) {
+      sum += c.close;
+      count++;
+    }
+  }
+  if (count === 0) return "NONE";
+  const sma200 = sum / count;
+
+  return last.close > sma200 ? "BULLISH" : "BEARISH";
 }

@@ -2,7 +2,7 @@ import { CandleBuilder } from "./candle.builder.js";
 import { DeltaCandle } from "../delta/types.js";
 import { logger } from "../utils/logger.js";
 
-type Timeframe = "1m" | "5m" | "15m";
+type Timeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 
 export class MarketCache {
   private builders: Map<Timeframe, CandleBuilder> = new Map();
@@ -12,6 +12,9 @@ export class MarketCache {
     this.builders.set("1m", new CandleBuilder(1));
     this.builders.set("5m", new CandleBuilder(5));
     this.builders.set("15m", new CandleBuilder(15));
+    this.builders.set("1h", new CandleBuilder(60));
+    this.builders.set("4h", new CandleBuilder(240));
+    this.builders.set("1d", new CandleBuilder(1440));
   }
 
   bootstrap(tf: Timeframe, candles: any[]) {
