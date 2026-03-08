@@ -40,6 +40,7 @@ import { savePaperState, loadPaperState } from "./state/persistence.js";
 import { BracketBuilder } from "./execution/bracket.builder.js";
 import { TradeJournal } from "./execution/trade.journal.js";
 import { ActivePosition } from "./execution/trade.types.js";
+import { calculatePositionSize } from "./risk/position.sizer.js";
 
 import { eventBus, MarketEventType, CandleEvent } from "./market/event.bus.js";
 
@@ -313,6 +314,14 @@ const bootstrap = async () => {
     }, 1000);
   });
 
+  // AI Health Check
+  const aiHealthy = await aiClient.healthCheck();
+  if (!aiHealthy) {
+    logger.warn("[ARES.AI] AI Client health check failed. Veto layer may be degraded.");
+  } else {
+    logger.info("[ARES.AI] AI Client connected and healthy.");
+  }
+
   if (env.TRADING_MODE === "paper") {
     const saved = await loadPaperState();
     if (saved) {
@@ -370,9 +379,9 @@ const bootstrap = async () => {
     },
     async () => {
       const symbolsForWs = Array.from(symbolContexts.keys());
-      logger.info(`[ARES.MARKET] WS connected; subscribing to ticker and ohlcv (1m, 5m, 15m) (${symbolsForWs.join(",")})`);
+      logger.info(`[ARES.MARKET] WS connected; subscribing to ticker and ohlcv (1m, 5m, 15m, 1h, 4h, 1d) (${symbolsForWs.join(",")})`);
       ws?.subscribe("v2/ticker", symbolsForWs);
-      ws?.subscribe("v2/ohlcv", symbolsForWs, ["1m", "5m", "15m"] as any);
+      ws?.subscribe("v2/ohlcv", symbolsForWs, ["1m", "5m", "15m", "1h", "4h", "1d"] as any);
     },
     {
       auth: env.TRADING_MODE === "live",
@@ -400,12 +409,32 @@ const bootstrap = async () => {
     }
   });
 
+  eventBus.on(MarketEventType.CANDLE_UPDATE, (event: CandleEvent) => {
+    const ctx = symbolContexts.get(event.symbol);
+    if (ctx && event.timeframe === "15m") {
+      void scanSymbol(ctx);
+    }
+  });
+
   logger.info("[ARES.BOOT] System ready; transitioning to RUNNING");
   fsm.setSystemState(SystemState.RUNNING);
   ws.connect();
 }
 
 const scanSymbol = async (ctx: SymbolContext) => {
+  if (KillSwitch.isKilled()) {
+    fsm.setSystemState(SystemState.KILLED);
+    return;
+  }
+
+  const riskCtx = await getRiskContext(ctx.symbol);
+  
+  // Daily Loss Check
+  if (riskCtx.dailyPnl <= -RISK_CONFIG.maxDailyLossUsdt) {
+    KillSwitch.trigger(KillReason.LOSS_LIMIT, { pnl: riskCtx.dailyPnl });
+    return;
+  }
+
   const bias = computeHTFBias(ctx.market, ctx.indicators);
   if (bias === "NONE") {
     fsm.setMarketRegime(MarketRegime.UNKNOWN);
@@ -452,15 +481,54 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
   const riskCtx = await getRiskContext(ctx.symbol);
   if (riskCtx.equity <= 0) return;
 
+  // Max Exposure Check
+  if (riskCtx.openTrades >= RISK_CONFIG.maxConcurrentTrades) {
+    logger.warn(`[ARES.RISK] Max concurrent trades reached (${riskCtx.openTrades})`);
+    return;
+  }
+
+  // Prevent duplicate entries for same symbol
+  if (activePositions.has(ctx.symbol.toUpperCase())) return;
+
+  const currentPrice = ctx.market.lastPrice();
   const stop = displacement.pullbackZone.stop;
-  const tp = computeTargets(ctx.market.lastPrice(), stop, bias as any, RISK_CONFIG.minRR);
+  const tp = computeTargets(currentPrice, stop, bias as any, RISK_CONFIG.minRR);
+
+  // Position Sizing
+  const riskAmount = riskCtx.equity * (RISK_CONFIG.riskPerTradePct / 100);
+  const qty = calculatePositionSize(riskAmount, currentPrice, stop);
+
+  if (qty <= 0) {
+    logger.warn(`[ARES.RISK] Calculated qty 0 for ${ctx.symbol}; check risk settings.`);
+    return;
+  }
+
+  // AI Veto Layer
+
+  const vetoInput: AIVetoInput = {
+    symbol: ctx.symbol,
+    intent: "ENTRY",
+    side: bias as any,
+    price: currentPrice,
+    indicators: ctx.indicators.snapshot("15m"),
+    structure: ctx.structure.lastBias ?? "UNKNOWN",
+    reason: `Active Displacement: ${displacement.type}`
+  };
+
+  const { allowed, reason } = await aiVeto(aiClient, vetoInput);
+  pushAiAnalysis(ctx.symbol, "ENTRY", allowed, reason);
+
+  if (!allowed) {
+    fsm.setSignalState(SignalState.IDLE);
+    return;
+  }
 
   const set = await orderManager.execute({
     symbol: ctx.symbol,
     productId: ctx.productId as number,
     side: bias as any,
-    entryPrice: ctx.market.lastPrice(),
-    qty: 1,
+    entryPrice: currentPrice,
+    qty,
     stopPrice: stop,
     targetPrice: tp,
     signalContext: { htfBias: bias, smcScore: 0.8, rr: RISK_CONFIG.minRR, reason: "Active Displacement" }
@@ -485,6 +553,9 @@ const handleOhlcvMessage = (msg: OhlcvMessage) => {
 
   const tf = data.interval as any;
   ctx.market.ingestCandle(tf, candle);
+  
+  // Update Indicators asynchronously
+  void ctx.indicators.update(tf);
 
   const lastTime = ctx.lastCandleTimes.get(tf) ?? 0;
   if (lastTime !== 0 && candle.timestamp > lastTime) {
