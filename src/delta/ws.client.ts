@@ -83,20 +83,15 @@ export class DeltaWsClient {
     return this.authenticated;
   }
 
-  subscribe(channel: string, symbols?: string[]) {
+  subscribe(channel: string, symbols?: string[], intervals?: string[]) {
+    const channelConfig: any = { name: channel };
+    if (symbols) channelConfig.symbols = symbols;
+    if (intervals) channelConfig.intervals = intervals;
+
     const payload = {
       type: "subscribe",
       payload: {
-        channels: [
-          symbols
-            ? {
-                name: channel,
-                symbols,
-              }
-            : {
-                name: channel,
-              },
-        ],
+        channels: [channelConfig],
       },
     };
     this.send(payload);

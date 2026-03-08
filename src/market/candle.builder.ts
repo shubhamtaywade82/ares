@@ -61,6 +61,19 @@ export class CandleBuilder {
     // case 4: out-of-order tick -> ignore
   }
 
+  updateFromExternal(candle: DeltaCandle) {
+    const last = this.candles[this.candles.length - 1];
+    if (!last || candle.timestamp > last.timestamp) {
+      this.candles.push(candle);
+      if (this.candles.length > 500) {
+        this.candles = this.candles.slice(-500);
+      }
+    } else if (candle.timestamp === last.timestamp) {
+      this.candles[this.candles.length - 1] = candle;
+    }
+    // ignore old candles
+  }
+
   getCandles(): readonly DeltaCandle[] {
     return this.candles;
   }

@@ -38,9 +38,17 @@ export class MarketCache {
 
   ingestTick(price: number, volume: number, timestamp: number) {
     this.latestPrice = price;
+    // We still allow building from ticks if needed, but for event-driven
+    // we might rely more on ingestCandle for the structure analysis.
     for (const builder of this.builders.values()) {
       builder.ingestTick(price, volume, timestamp);
     }
+  }
+
+  ingestCandle(tf: Timeframe, candle: DeltaCandle) {
+    const builder = this.builders.get(tf);
+    if (!builder) throw new Error(`Unknown timeframe ${tf}`);
+    builder.updateFromExternal(candle);
   }
 
   lastPrice(): number {

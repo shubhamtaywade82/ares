@@ -41,6 +41,8 @@ import { BracketBuilder } from "./execution/bracket.builder.js";
 import { TradeJournal } from "./execution/trade.journal.js";
 import { ActivePosition } from "./execution/trade.types.js";
 
+import { eventBus, MarketEventType, CandleEvent } from "./market/event.bus.js";
+
 type TickerMessage = {
   type?: string;
   price?: number | string;
@@ -50,6 +52,20 @@ type TickerMessage = {
   volume?: number | string;
   timestamp?: number;
   symbol?: string;
+};
+
+type OhlcvMessage = {
+  type: "v2/ohlcv";
+  symbol: string;
+  data: {
+    open: string;
+    high: string;
+    low: string;
+    close: string;
+    volume: string;
+    time: number;
+    interval: string;
+  };
 };
 
 function tickerPrice(msg: TickerMessage): number | null {
@@ -63,8 +79,7 @@ type SymbolContext = {
   productId?: number | undefined;
   market: MarketCache;
   indicators: IndicatorCache;
-  lastClosed5m: number;
-  lastClosed15m: number;
+  lastCandleTimes: Map<string, number>;
   running: boolean;
   cachedProduct?: any;
   structure: StructureAnalyzer;
@@ -322,8 +337,7 @@ async function bootstrap() {
       indicators,
       structure: new StructureAnalyzer(),
       smc: new SmcAnalyzer(),
-      lastClosed5m: 0,
-      lastClosed15m: 0,
+      lastCandleTimes: new Map(),
       running: false,
       productId,
     };
@@ -342,11 +356,10 @@ async function bootstrap() {
         if (ctx) {
           ctx.market.ingestTick(price, 0, Date.now());
           if (paper) paper.onTick(price, ctx.productId, ctx.symbol);
-          const closed5m = ctx.market.lastClosed("5m");
-          if (closed5m && closed5m.timestamp !== ctx.lastClosed5m) {
-            ctx.lastClosed5m = closed5m.timestamp;
-          }
         }
+      }
+      if (msg?.type === "v2/ohlcv") {
+        handleOhlcvMessage(msg);
       }
       if (msg?.channel === "orders") handleOrderUpdate(msg);
       if (msg?.channel === "positions") handlePositionUpdate(msg);
@@ -357,8 +370,9 @@ async function bootstrap() {
     },
     async () => {
       const symbolsForWs = Array.from(symbolContexts.keys());
-      logger.info(`[ARES.MARKET] WS connected; subscribing to ticker (${symbolsForWs.join(",")})`);
+      logger.info(`[ARES.MARKET] WS connected; subscribing to ticker and ohlcv (1m, 5m, 15m) (${symbolsForWs.join(",")})`);
       ws?.subscribe("v2/ticker", symbolsForWs);
+      ws?.subscribe("v2/ohlcv", symbolsForWs, ["1m", "5m", "15m"] as any);
     },
     {
       auth: env.TRADING_MODE === "live",
@@ -378,16 +392,17 @@ async function bootstrap() {
     });
   }
 
+  // Hook Strategy to Event Bus
+  eventBus.on(MarketEventType.CANDLE_CLOSE, (event: CandleEvent) => {
+    const ctx = symbolContexts.get(event.symbol);
+    if (ctx && event.timeframe === "15m") {
+      void scanSymbol(ctx);
+    }
+  });
+
   logger.info("[ARES.BOOT] System ready; transitioning to RUNNING");
   fsm.setSystemState(SystemState.RUNNING);
   ws.connect();
-
-  // 5-Second Scanner Loop
-  setInterval(async () => {
-    for (const ctx of symbolContexts.values()) {
-      await scanSymbol(ctx);
-    }
-  }, 5000);
 }
 
 async function scanSymbol(ctx: SymbolContext) {
@@ -452,6 +467,50 @@ async function executeEntry(ctx: SymbolContext, bias: string, displacement: any)
   });
 
   if (set?.entryOrderId) fsm.setSignalState(SignalState.ORDER_PLACED);
+}
+
+function handleOhlcvMessage(msg: OhlcvMessage) {
+  const ctx = symbolContexts.get(msg.symbol);
+  if (!ctx) return;
+
+  const data = msg.data;
+  const candle = {
+    timestamp: data.time * 1000,
+    open: Number(data.open),
+    high: Number(data.high),
+    low: Number(data.low),
+    close: Number(data.close),
+    volume: Number(data.volume),
+  };
+
+  const tf = data.interval as any;
+  ctx.market.ingestCandle(tf, candle);
+
+  const lastTime = ctx.lastCandleTimes.get(tf) ?? 0;
+  if (lastTime !== 0 && candle.timestamp > lastTime) {
+    // The previous candle just closed because we have a new timestamp.
+    // However, the event we received is the BEGINNING of the new candle.
+    // We need the ACTUAL closed candle from the cache.
+    const closedCandle = ctx.market.lastClosed(tf);
+    if (closedCandle) {
+      eventBus.emitCandle({
+        symbol: msg.symbol,
+        timeframe: tf,
+        candle: closedCandle,
+        isClosed: true,
+      });
+    }
+  }
+
+  ctx.lastCandleTimes.set(tf, candle.timestamp);
+
+  // Also emit update for current candle
+  eventBus.emitCandle({
+    symbol: msg.symbol,
+    timeframe: tf,
+    candle,
+    isClosed: false,
+  });
 }
 
 function handleTickerMessage(msg: TickerMessage) {
