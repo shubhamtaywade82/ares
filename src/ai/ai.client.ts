@@ -133,7 +133,7 @@ export class AIClient {
   }
 }
 
-export function createAIClientFromEnv(): AIClient {
+export const createAIClientFromEnv = (): AIClient => {
   const provider = (process.env.AI_PROVIDER ?? "ollama") as AIProvider;
 
   return new AIClient({

@@ -1,8 +1,8 @@
-export function checkLeverage(
+export const checkLeverage = (
   notional: number,
   balance: number,
   maxLeverage: number
-): string | null {
+): string | null => {
   const leverage = notional / balance;
 
   if (leverage > maxLeverage) {

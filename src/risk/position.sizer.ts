@@ -2,9 +2,9 @@ import { RISK_CONFIG, resolveMaxLeverage } from "../config/risk.js";
 import { logger } from "../utils/logger.js";
 import { TradeRiskInput, PositionSizeResult } from "./types.js";
 
-export function calculatePositionSize(
+export const calculatePositionSize = (
   input: { equity: number; availableBalance: number } & TradeRiskInput
-): PositionSizeResult | null {
+): PositionSizeResult | null => {
   const riskAmountINR = input.equity * RISK_CONFIG.riskPerTradePct;
   const riskAmountUSD = riskAmountINR * input.inrToUsd;
   const stopDistanceUSD = Math.abs(input.entryPrice - input.stopPrice);

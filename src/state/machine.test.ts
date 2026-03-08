@@ -7,7 +7,7 @@ import { ARESSignalValidator } from "../types/ares.schema.js";
  * Verification Script for Refined ARES Architecture
  */
 
-function runTests() {
+const runTests = () => {
   console.log("🚀 Starting Refined ARES State Machine Verification...\n");
 
   const sm = new ARESStateMachine();

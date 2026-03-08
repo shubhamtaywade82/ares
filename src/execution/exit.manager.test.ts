@@ -10,7 +10,7 @@ import { TradeJournal } from "./trade.journal.js";
 import { calculatePnl, calculateRMultiple } from "./pnl.js";
 import { ActivePosition } from "./trade.types.js";
 
-function makePosition(): ActivePosition {
+const makePosition = (): ActivePosition => {
   return {
     entryOrderId: "entry-1",
     symbol: "BTCUSD",

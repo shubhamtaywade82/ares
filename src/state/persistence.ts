@@ -11,7 +11,7 @@ export interface PaperState {
   positions: Position[];
 }
 
-export async function savePaperState(state: PaperState): Promise<void> {
+export const savePaperState = async (state: PaperState): Promise<void> => {
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
     await fs.writeFile(STATE_FILE, JSON.stringify(state, null, 2), "utf-8");
@@ -20,7 +20,7 @@ export async function savePaperState(state: PaperState): Promise<void> {
   }
 }
 
-export async function loadPaperState(): Promise<PaperState | null> {
+export const loadPaperState = async (): Promise<PaperState | null> => {
   try {
     const exists = await fs
       .stat(STATE_FILE)

@@ -1,10 +1,10 @@
 import tulind from "tulind";
 import { DeltaCandle } from "../delta/types.js";
 
-export async function computeATR(
+export const computeATR = async (
   candles: readonly DeltaCandle[],
   period = 14
-): Promise<number | undefined> {
+): Promise<number | undefined> => {
   if (candles.length < period + 1) return undefined;
 
   const highs = candles.map((c) => c.high);

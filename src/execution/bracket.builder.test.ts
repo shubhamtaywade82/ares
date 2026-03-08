@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { BracketBuilder } from "./bracket.builder.js";
 import { ActivePosition } from "./trade.types.js";
 
-function pos(): ActivePosition {
+const pos = (): ActivePosition => {
   return {
     entryOrderId: "entry-1",
     symbol: "BTCUSD",

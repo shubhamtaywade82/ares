@@ -9,12 +9,12 @@ import { logger } from "../utils/logger.js";
 import { StructureAnalyzer } from "./structure.js";
 import { SmcAnalyzer } from "./smc.js";
 
-export async function runStrategy(
+export const runStrategy = async (
   market: MarketCache,
   indicators: IndicatorCache,
   structure?: StructureAnalyzer,
   smc?: SmcAnalyzer
-): Promise<SetupSignal | null> {
+): Promise<SetupSignal | null> => {
   // Hard readiness checks
   if (!indicators.isReady("15m") || !indicators.isReady("5m")) {
     logger.debug(`[ARES.STRATEGY] Indicators not ready (15m: ${indicators.isReady('15m')}, 5m: ${indicators.isReady('5m')})`);

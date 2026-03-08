@@ -8,7 +8,7 @@ type AIDecision = { decision: "ALLOW" | "BLOCK" | "HOLD" | "CLOSE"; reason: stri
 /**
  * Validate that a parsed decision has valid fields
  */
-function validateDecision(d: any): asserts d is AIDecision {
+const validateDecision = (d: any): asserts d is AIDecision => {
   const validDecisions = ["ALLOW", "BLOCK", "HOLD", "CLOSE"];
 
   if (!d || typeof d !== "object") {
@@ -29,7 +29,7 @@ function validateDecision(d: any): asserts d is AIDecision {
  * markdown code fences (```json ... ```). Many local models ignore "no fences"
  * instructions in the prompt.
  */
-function extractJson(raw: string): AIDecision {
+const extractJson = (raw: string): AIDecision => {
   const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
   const candidate = (fenceMatch ? fenceMatch[1] ?? "" : raw).trim();
 
@@ -59,7 +59,7 @@ function extractJson(raw: string): AIDecision {
 /**
  * Heuristic fallback for models that ignore JSON formatting.
  */
-function heuristicDecision(raw: string, intent: string): AIDecision {
+const heuristicDecision = (raw: string, intent: string): AIDecision => {
   const upper = raw.toUpperCase();
   let decision: "ALLOW" | "BLOCK" | "HOLD" | "CLOSE" =
     intent === "EXIT" ? "HOLD" : "BLOCK";
@@ -82,10 +82,10 @@ function heuristicDecision(raw: string, intent: string): AIDecision {
   };
 }
 
-export async function aiVeto(
+export const aiVeto = async (
   client: AIClient,
   input: AIVetoInput
-): Promise<{ allowed: boolean; reason: string }> {
+): Promise<{ allowed: boolean; reason: string }> => {
   try {
     const prompt = buildAIPrompt(input);
     const raw = await client.analyze(prompt);

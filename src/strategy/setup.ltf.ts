@@ -8,24 +8,24 @@ import { detectPattern } from "./patterns.js";
 const SWEEP_PROXIMITY_PCT = 0.015;
 const SWEEP_VOLUME_MULTIPLIER = 1.5;
 
-function isSweepConfluent(sweep: LiquiditySweep, price: number): boolean {
+const isSweepConfluent = (sweep: LiquiditySweep, price: number): boolean => {
   if (price <= 0) return false;
   const distance = Math.abs(sweep.reference - price) / price;
   return distance <= SWEEP_PROXIMITY_PCT;
 }
 
-function isSweepVolumeConfirmed(sweep: LiquiditySweep): boolean {
+const isSweepVolumeConfirmed = (sweep: LiquiditySweep): boolean => {
   if (sweep.avgVolume20 <= 0) return false;
   return sweep.volume >= sweep.avgVolume20 * SWEEP_VOLUME_MULTIPLIER;
 }
 
-export function detectLTFSetup(
+export const detectLTFSetup = (
   bias: Bias,
   market: MarketCache,
   indicators: IndicatorCache,
   structure?: StructureAnalyzer,
   smc?: SmcAnalyzer
-): SetupSignal | null {
+): SetupSignal | null => {
   if (bias === "NONE") return null;
 
   const candles = market.candles("5m");

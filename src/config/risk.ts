@@ -15,7 +15,7 @@ export const RISK_CONFIG = {
   GST_RATE: 0.18,
 };
 
-export function resolveMaxLeverage(symbol?: string): number {
+export const resolveMaxLeverage = (symbol?: string): number => {
   if (!symbol) return RISK_CONFIG.defaultMaxLeverage;
   const upper = symbol.toUpperCase();
   return RISK_CONFIG.maxLeverageBySymbol[upper] ?? RISK_CONFIG.defaultMaxLeverage;

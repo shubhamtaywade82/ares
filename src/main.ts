@@ -68,7 +68,7 @@ type OhlcvMessage = {
   };
 };
 
-function tickerPrice(msg: TickerMessage): number | null {
+const tickerPrice = (msg: TickerMessage): number | null => {
   const raw = msg.mark_price ?? msg.close ?? msg.spot_price ?? msg.price;
   if (raw == null) return null;
   return typeof raw === "string" ? Number(raw) : raw;
@@ -106,7 +106,7 @@ const watchlistLtps = new Map<string, number>();
 const AI_ANALYSIS_LOG_MAX = 20;
 const aiAnalysisLog: Array<{ symbol: string; intent: string; decision: "ALLOW" | "BLOCK"; reason: string; timestamp: number }> = [];
 
-function pushAiAnalysis(symbol: string, intent: string, allowed: boolean, reason: string): void {
+const pushAiAnalysis = (symbol: string, intent: string, allowed: boolean, reason: string): void => {
   aiAnalysisLog.unshift({
     symbol,
     intent,
@@ -120,7 +120,7 @@ function pushAiAnalysis(symbol: string, intent: string, allowed: boolean, reason
 let cachedBalance: number | undefined;
 let dailyPnlBaseline = 0;
 
-async function getRiskContext(symbol: string): Promise<RiskContext> {
+const getRiskContext = async (symbol: string): Promise<RiskContext> => {
   let balance =
     env.TRADING_MODE === "paper"
       ? env.PAPER_BALANCE ?? cachedBalance ?? 0
@@ -181,7 +181,7 @@ async function getRiskContext(symbol: string): Promise<RiskContext> {
   };
 }
 
-function countOpenTradesBySymbol(symbol: string): number {
+const countOpenTradesBySymbol = (symbol: string): number => {
   const key = symbol.toUpperCase();
   if (env.TRADING_MODE === "paper") {
     return positions.all().filter((pos) => pos.productSymbol?.toUpperCase() === key).length;
@@ -193,7 +193,7 @@ function countOpenTradesBySymbol(symbol: string): number {
 
 const API_PORT = 3001;
 
-async function getStatePayload(): Promise<object> {
+const getStatePayload = async (): Promise<object> => {
   const riskCtx = await getRiskContext("BTCUSD");
   const snapshot = fsm.getSnapshot();
   const tickers = Array.from(symbolContexts.entries()).map(([symbol, ctx]) => {
@@ -253,13 +253,13 @@ const stateServer = http.createServer(async (req, res) => {
 
 const wss = new WebSocketServer({ server: stateServer });
 
-function normalizeSymbols(): string[] {
+const normalizeSymbols = (): string[] => {
   const raw = env.DELTA_PRODUCT_SYMBOLS ?? env.DELTA_PRODUCT_SYMBOL;
   if (!raw) return ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD"];
   return raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
 }
 
-async function resolveProductIdBySymbol(restClient: DeltaRestClient, symbol: string): Promise<number | undefined> {
+const resolveProductIdBySymbol = async (restClient: DeltaRestClient, symbol: string): Promise<number | undefined> => {
   try {
     const res = await restClient.getProducts({
       symbol,
@@ -279,13 +279,13 @@ async function resolveProductIdBySymbol(restClient: DeltaRestClient, symbol: str
   return undefined;
 }
 
-async function persistState() {
+const persistState = async () => {
     if (env.TRADING_MODE === "paper") {
       await savePaperState({ realizedPnl: pnl.value, positions: positions.all() });
     }
 }
 
-function scheduleDailyPnlReset() {
+const scheduleDailyPnlReset = () => {
   const now = new Date();
   const nextReset = new Date(now);
   nextReset.setUTCHours(0, 0, 0, 0);
@@ -298,7 +298,7 @@ function scheduleDailyPnlReset() {
   }, diff);
 }
 
-async function bootstrap() {
+const bootstrap = async () => {
   stateServer.listen(API_PORT, "0.0.0.0", () => {
     logger.info(`[ARES.API] State server listening on 0.0.0.0:${API_PORT}`);
     setInterval(() => {
@@ -405,7 +405,7 @@ async function bootstrap() {
   ws.connect();
 }
 
-async function scanSymbol(ctx: SymbolContext) {
+const scanSymbol = async (ctx: SymbolContext) => {
   const bias = computeHTFBias(ctx.market, ctx.indicators);
   if (bias === "NONE") {
     fsm.setMarketRegime(MarketRegime.UNKNOWN);
@@ -448,7 +448,7 @@ async function scanSymbol(ctx: SymbolContext) {
   }
 }
 
-async function executeEntry(ctx: SymbolContext, bias: string, displacement: any) {
+const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any) => {
   const riskCtx = await getRiskContext(ctx.symbol);
   if (riskCtx.equity <= 0) return;
 
@@ -469,7 +469,7 @@ async function executeEntry(ctx: SymbolContext, bias: string, displacement: any)
   if (set?.entryOrderId) fsm.setSignalState(SignalState.ORDER_PLACED);
 }
 
-function handleOhlcvMessage(msg: OhlcvMessage) {
+const handleOhlcvMessage = (msg: OhlcvMessage) => {
   const ctx = symbolContexts.get(msg.symbol);
   if (!ctx) return;
 
@@ -513,7 +513,7 @@ function handleOhlcvMessage(msg: OhlcvMessage) {
   });
 }
 
-function handleTickerMessage(msg: TickerMessage) {
+const handleTickerMessage = (msg: TickerMessage) => {
   const price = tickerPrice(msg);
   if (price == null || !msg.symbol) return;
   watchlistLtps.set(msg.symbol, price);
@@ -521,10 +521,10 @@ function handleTickerMessage(msg: TickerMessage) {
   if (ctx) ctx.market.ingestTick(price, 0, Date.now());
 }
 
-function handleOrderUpdate(msg: any) {
+const handleOrderUpdate = (msg: any) => {
 }
 
-function handlePositionUpdate(msg: any) {
+const handlePositionUpdate = (msg: any) => {
 }
 
 bootstrap().catch((e) => {

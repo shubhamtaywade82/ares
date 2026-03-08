@@ -1,6 +1,6 @@
 import { AIVetoInput } from "./ai.types.js";
 
-export function buildAIPrompt(input: AIVetoInput) {
+export const buildAIPrompt = (input: AIVetoInput) => {
   return {
     role: "user",
     content: `You are a Senior Prop Desk Trader specialized in Order Flow and Smart Money Concepts (SMC).

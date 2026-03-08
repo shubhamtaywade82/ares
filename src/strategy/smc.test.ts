@@ -7,7 +7,7 @@ import { SwingPoint } from "./structure.js";
 
 const RESOLUTION_MS = 15 * 60 * 1000;
 
-function buildCandlesWithBearTrap(baseTs: number): DeltaCandle[] {
+const buildCandlesWithBearTrap = (baseTs: number): DeltaCandle[] => {
   const candles: DeltaCandle[] = [];
   for (let i = 0; i < 21; i++) {
     candles.push({
@@ -31,7 +31,7 @@ function buildCandlesWithBearTrap(baseTs: number): DeltaCandle[] {
   return candles;
 }
 
-function swingsForBearTrap(lastCandle: DeltaCandle): SwingPoint[] {
+const swingsForBearTrap = (lastCandle: DeltaCandle): SwingPoint[] => {
   return [
     {
       type: "LOW",

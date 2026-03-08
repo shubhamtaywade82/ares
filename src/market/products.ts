@@ -1,6 +1,6 @@
 import { DeltaRestClient } from "../delta/rest.client.js";
 
-export async function fetchLivePerpetualFutures(rest: DeltaRestClient) {
+export const fetchLivePerpetualFutures = async (rest: DeltaRestClient) => {
   const res = await rest.getProducts({
     contract_types: "perpetual_futures",
     states: "live",

@@ -3,9 +3,9 @@ import { DeltaCandle } from "../delta/types.js";
 
 const VWAP_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-export async function computeVWAP(
+export const computeVWAP = async (
   candles: readonly DeltaCandle[]
-): Promise<number | undefined> {
+): Promise<number | undefined> => {
   if (candles.length < 2) return undefined;
 
   // Use a 24h rolling window so VWAP stays a meaningful mean-reversion anchor;

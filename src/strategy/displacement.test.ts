@@ -20,10 +20,10 @@ const BASE_TS = 1_740_000_000_000;
 const RES_MS = 5 * 60 * 1000;
 
 /** Build normal candles followed by a final candidate candle. */
-function buildCandles(
+const buildCandles = (
   count: number,
   overrideLast?: Partial<DeltaCandle>
-): DeltaCandle[] {
+): DeltaCandle[] => {
   const candles: DeltaCandle[] = [];
   for (let i = 0; i < count; i++) {
     candles.push({
@@ -41,19 +41,19 @@ function buildCandles(
   return candles;
 }
 
-function swingHigh(price: number, index = 10): SwingPoint {
+const swingHigh = (price: number, index = 10): SwingPoint => {
   return { type: "HIGH", price, index, timestamp: BASE_TS + index * RES_MS };
 }
 
-function swingLow(price: number, index = 10): SwingPoint {
+const swingLow = (price: number, index = 10): SwingPoint => {
   return { type: "LOW", price, index, timestamp: BASE_TS + index * RES_MS };
 }
 
 /** Build a valid SmcContext with a recent sweep and matching FVG. */
-function validSmcContext(
+const validSmcContext = (
   direction: "BULLISH" | "BEARISH",
   currentBarIndex = 100
-): SmcContext {
+): SmcContext => {
   const fvgs: FVGZone[] = [
     direction === "BULLISH"
       ? { type: "BULLISH", top: 104, bottom: 102 }

@@ -3,7 +3,7 @@ import { KillSwitch } from "./kill.switch.js";
 import { KillReason } from "./kill.reasons.js";
 import { RiskContext } from "./types.js";
 
-export function checkExposure(ctx: RiskContext, symbol: string): string | null {
+export const checkExposure = (ctx: RiskContext, symbol: string): string | null => {
   if (ctx.openTrades >= RISK_CONFIG.maxOpenTradesTotal) {
     return "MAX_OPEN_TRADES_REACHED";
   }

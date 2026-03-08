@@ -8,7 +8,7 @@ export interface Pattern {
   score: number;
 }
 
-export function detectPattern(candles: readonly DeltaCandle[]): Pattern | null {
+export const detectPattern = (candles: readonly DeltaCandle[]): Pattern | null => {
   if (candles.length < 2) return null;
 
   const last = candles.at(-1);

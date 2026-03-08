@@ -16,7 +16,7 @@ type SymbolConfig = {
 
 const BTC_MIN_CAPITAL = 20_000;
 
-function normalizeSymbols(): SymbolConfig[] {
+const normalizeSymbols = (): SymbolConfig[] => {
   const rawList = env.DELTA_PRODUCT_SYMBOLS;
   if (rawList) {
     return rawList
@@ -31,7 +31,7 @@ function normalizeSymbols(): SymbolConfig[] {
   return [{ symbol: SYMBOLS.BTC_USDT.symbol }];
 }
 
-function isSymbolEligible(symbol: string, capital: number): boolean {
+const isSymbolEligible = (symbol: string, capital: number): boolean => {
   const upper = symbol.toUpperCase();
   if (upper.startsWith("BTC") && capital < BTC_MIN_CAPITAL && env.TRADING_MODE === "paper") {
     console.log(
@@ -44,7 +44,7 @@ function isSymbolEligible(symbol: string, capital: number): boolean {
 
 const MODE_TAG = env.TRADING_MODE === "live" ? "LIVE" : "PAPER";
 
-async function determineSide(symbol: string): Promise<"buy" | "sell" | null> {
+const determineSide = async (symbol: string): Promise<"buy" | "sell" | null> => {
   console.log(`\n[ARES.${MODE_TAG}] Resolving strategy direction for ${symbol}...`);
 
   const rest = new DeltaRestClient();
@@ -71,7 +71,7 @@ async function determineSide(symbol: string): Promise<"buy" | "sell" | null> {
   return side;
 }
 
-async function run(): Promise<void> {
+const run = async (): Promise<void> => {
   const isLive = env.TRADING_MODE === "live";
   const capital = isLive ? 0 : (env.PAPER_BALANCE ?? 0);
 

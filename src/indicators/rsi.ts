@@ -1,10 +1,10 @@
 import { RSI } from "technicalindicators";
 import { DeltaCandle } from "../delta/types.js";
 
-export function computeRSI(
+export const computeRSI = (
   candles: readonly DeltaCandle[],
   period = 14
-): number | undefined {
+): number | undefined => {
   if (candles.length < period + 1) return undefined;
 
   const closes = candles.map((c) => c.close);

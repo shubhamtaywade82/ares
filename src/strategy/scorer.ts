@@ -1,10 +1,10 @@
 import { SetupSignal } from "./types.js";
 import { IndicatorSnapshot } from "../indicators/types.js";
 
-export function scoreSetup(
+export const scoreSetup = (
   setup: SetupSignal,
   htfIndicators: IndicatorSnapshot
-): SetupSignal | null {
+): SetupSignal | null => {
   let score = setup.score;
   const reasons = [...setup.reasons];
 

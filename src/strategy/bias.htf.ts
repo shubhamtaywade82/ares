@@ -5,11 +5,11 @@ import { env } from "../config/env.js";
 import { logger } from "../utils/logger.js";
 import { StructureAnalyzer } from "./structure.js";
 
-export function computeHTFBias(
+export const computeHTFBias = (
   market: MarketCache,
   indicators: IndicatorCache,
   structure?: StructureAnalyzer
-): Bias {
+): Bias => {
   if (env.FORCE_HTF_BIAS) {
     logger.info(`[ARES.STRATEGY] Forced HTF bias=${env.FORCE_HTF_BIAS}`);
     return env.FORCE_HTF_BIAS;
@@ -50,7 +50,7 @@ export function computeHTFBias(
  * Quick structural bias check for a specific timeframe without full StructureAnalyzer state.
  * Uses EMA200 for simplicity as a proxy for structural trend in HTF if StructureAnalyzer is only for execution TF.
  */
-function computeStructuralBias(market: MarketCache, tf: string): "BULLISH" | "BEARISH" | "NONE" {
+const computeStructuralBias = (market: MarketCache, tf: string): "BULLISH" | "BEARISH" | "NONE" => {
   const candles = market.candles(tf as any);
   if (candles.length < 200) return "NONE";
   

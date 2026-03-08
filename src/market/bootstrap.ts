@@ -2,11 +2,11 @@ import { DeltaRestClient } from "../delta/rest.client.js";
 import { logger } from "../utils/logger.js";
 import { MarketCache } from "./market.cache.js";
 
-export async function bootstrapMarket(
+export const bootstrapMarket = async (
   rest: DeltaRestClient,
   cache: MarketCache,
   symbol: string
-) {
+) => {
   const end = Math.floor(Date.now() / 1000);
   const timeframes: Array<{ tf: "1m" | "5m" | "15m" | "1h" | "4h" | "1d"; lookbackSeconds: number }> = [
     { tf: "1m", lookbackSeconds: 60 * 60 * 6 },

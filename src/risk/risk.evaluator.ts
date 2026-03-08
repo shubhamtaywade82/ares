@@ -5,10 +5,10 @@ import { RiskContext, TradeRiskInput } from "./types.js";
 import { resolveMaxLeverage } from "../config/risk.js";
 import { logger } from "../utils/logger.js";
 
-export function evaluateRisk(
+export const evaluateRisk = (
   ctx: RiskContext,
   trade: TradeRiskInput
-): { allowed: true; qty: number } | { allowed: false; reason: string } {
+): { allowed: true; qty: number } | { allowed: false; reason: string } => {
   const exposureFail = checkExposure(ctx, trade.symbol);
   if (exposureFail) {
     console.warn(`[ARES.RISK] Blocked by exposure guard: ${exposureFail}`);

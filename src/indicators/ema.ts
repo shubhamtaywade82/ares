@@ -1,10 +1,10 @@
 import { EMA } from "technicalindicators";
 import { DeltaCandle } from "../delta/types.js";
 
-export function computeEMA(
+export const computeEMA = (
   candles: readonly DeltaCandle[],
   period: number
-): number | undefined {
+): number | undefined => {
   if (candles.length < period) return undefined;
 
   const closes = candles.map((c) => c.close);

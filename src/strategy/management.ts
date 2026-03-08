@@ -14,11 +14,11 @@ export interface ManagementAction {
  * 2. Break-Even: Move SL to Entry at 1:1 RR.
  * 3. Trailing Stop: Follow the latest Swing Points once in profit.
  */
-export function managePosition(
+export const managePosition = (
   pos: Position,
   currentPrice: number,
   structure: StructureAnalyzer
-): ManagementAction | null {
+): ManagementAction | null => {
   if (!pos.stopPrice) return null;
 
   const isLong = pos.side === "LONG";

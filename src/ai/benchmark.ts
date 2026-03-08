@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { createAIClientFromEnv } from "./ai.client.js";
 
-async function benchmark() {
+const benchmark = async () => {
   const client = createAIClientFromEnv();
 
   // Best picks from available models
