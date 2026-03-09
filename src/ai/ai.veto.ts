@@ -8,7 +8,7 @@ type AIDecision = { decision: "ALLOW" | "BLOCK" | "HOLD" | "CLOSE"; reason: stri
 /**
  * Validate that a parsed decision has valid fields
  */
-const validateDecision = (d: any): asserts d is AIDecision => {
+const validateDecision: (d: any) => asserts d is AIDecision = (d: any): asserts d is AIDecision => {
   const validDecisions = ["ALLOW", "BLOCK", "HOLD", "CLOSE"];
 
   if (!d || typeof d !== "object") {

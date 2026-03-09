@@ -38,6 +38,7 @@ export class DeltaWsClient {
     this.ws = new WebSocket(env.DELTA_WS_URL);
 
     this.ws.on("open", () => {
+      if (process.env.LOG_LEVEL === "debug") console.log("[ARES.WS.DEBUG] WS connection opened");
       this.reconnectAttempts = 0;
       this.startHeartbeat();
       if (this.options.auth) {
@@ -48,18 +49,26 @@ export class DeltaWsClient {
 
     this.ws.on("message", (data) => {
       const message = JSON.parse(data.toString());
+      if (process.env.LOG_LEVEL === "debug") {
+        console.log(`[ARES.WS.RAW] ${data.toString().slice(0, 2000)}...`);
+      }
       if (message?.type === "key-auth") {
         this.authenticated = Boolean(message.success);
         this.options.onAuth?.(this.authenticated, message);
         return;
       }
+      if (process.env.LOG_LEVEL === "debug") {
+        console.log(`[ARES.WS.DEBUG] Calling onMessage for type=${message?.type}`);
+      }
       this.onMessage(message);
     });
 
-    this.ws.on("close", () => {
-      this.handleDisconnect("WS_DISCONNECT");
+    this.ws.on("close", (code, reason) => {
+      if (process.env.LOG_LEVEL === "debug") console.log(`[ARES.WS.DEBUG] WS connection closed: code=${code}, reason=${reason.toString()}`);
+      this.handleDisconnect(`WS_DISCONNECT: code=${code}`);
     });
     this.ws.on("error", (err) => {
+      if (process.env.LOG_LEVEL === "debug") console.error(`[ARES.WS.DEBUG] WS connection error: ${err.message}`);
       this.handleDisconnect(`WS_ERROR: ${err.message}`);
     });
   }
@@ -83,10 +92,10 @@ export class DeltaWsClient {
     return this.authenticated;
   }
 
-  subscribe(channel: string, symbols?: string[], intervals?: string[]) {
+  subscribe(channel: string, symbols?: string[], resolutions?: string[]) {
     const channelConfig: any = { name: channel };
     if (symbols) channelConfig.symbols = symbols;
-    if (intervals) channelConfig.intervals = intervals;
+    if (resolutions) channelConfig.resolutions = resolutions;
 
     const payload = {
       type: "subscribe",

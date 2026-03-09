@@ -56,16 +56,16 @@ type TickerMessage = {
 };
 
 type OhlcvMessage = {
-  type: "v2/ohlcv";
+  type: "candlesticks";
   symbol: string;
-  data: {
-    open: string;
-    high: string;
-    low: string;
-    close: string;
-    volume: string;
+  resolution: string;
+  candle: {
+    open: string | number;
+    high: string | number;
+    low: string | number;
+    close: string | number;
+    volume: string | number;
     time: number;
-    interval: string;
   };
 };
 
@@ -357,7 +357,10 @@ const bootstrap = async () => {
 
   const ws = new DeltaWsClient(
     (msg: any) => {
-      if (msg?.type === "v2/ticker") {
+      if (process.env.LOG_LEVEL === "debug") {
+        console.log(`[ARES.WS.MSG] type=${msg?.type} symbol=${msg?.symbol}`);
+      }
+      if (msg?.type === "v2/ticker" || msg?.type === "ticker") {
         handleTickerMessage(msg);
         const price = tickerPrice(msg);
         if (price == null || !msg.symbol) return;
@@ -367,7 +370,7 @@ const bootstrap = async () => {
           if (paper) paper.onTick(price, ctx.productId, ctx.symbol);
         }
       }
-      if (msg?.type === "v2/ohlcv") {
+      if (msg?.type?.startsWith("candlestick_")) {
         handleOhlcvMessage(msg);
       }
       if (msg?.channel === "orders") handleOrderUpdate(msg);
@@ -379,9 +382,13 @@ const bootstrap = async () => {
     },
     async () => {
       const symbolsForWs = Array.from(symbolContexts.keys());
-      logger.info(`[ARES.MARKET] WS connected; subscribing to ticker and ohlcv (1m, 5m, 15m, 1h, 4h, 1d) (${symbolsForWs.join(",")})`);
+      logger.info(`[ARES.MARKET] WS connected; subscribing to v2/ticker and candlesticks (1m, 5m, 15m, 1h, 4h, 1d) (${symbolsForWs.join(",")})`);
       ws?.subscribe("v2/ticker", symbolsForWs);
-      ws?.subscribe("v2/ohlcv", symbolsForWs, ["1m", "5m", "15m", "1h", "4h", "1d"] as any);
+      
+      const resolutions = ["1m", "5m", "15m", "1h", "4h", "1d"];
+      for (const res of resolutions) {
+        ws?.subscribe(`candlestick_${res}`, symbolsForWs);
+      }
     },
     {
       auth: env.TRADING_MODE === "live",
@@ -422,16 +429,16 @@ const bootstrap = async () => {
 }
 
 const scanSymbol = async (ctx: SymbolContext) => {
-  if (KillSwitch.isKilled()) {
-    fsm.setSystemState(SystemState.KILLED);
+  if (KillSwitch.isTriggered()) {
+    fsm.setSystemState(SystemState.ERROR);
     return;
   }
 
   const riskCtx = await getRiskContext(ctx.symbol);
   
-  // Daily Loss Check
-  if (riskCtx.dailyPnl <= -RISK_CONFIG.maxDailyLossUsdt) {
-    KillSwitch.trigger(KillReason.LOSS_LIMIT, { pnl: riskCtx.dailyPnl });
+  // Daily Loss Check (percentage based)
+  if (riskCtx.dailyPnl <= -(riskCtx.equity * RISK_CONFIG.maxDailyLossPct)) {
+    KillSwitch.trigger(KillReason.MAX_DAILY_LOSS, { pnl: riskCtx.dailyPnl });
     return;
   }
 
@@ -482,7 +489,7 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
   if (riskCtx.equity <= 0) return;
 
   // Max Exposure Check
-  if (riskCtx.openTrades >= RISK_CONFIG.maxConcurrentTrades) {
+  if (riskCtx.openTrades >= RISK_CONFIG.maxOpenTradesTotal) {
     logger.warn(`[ARES.RISK] Max concurrent trades reached (${riskCtx.openTrades})`);
     return;
   }
@@ -495,24 +502,60 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
   const tp = computeTargets(currentPrice, stop, bias as any, RISK_CONFIG.minRR);
 
   // Position Sizing
-  const riskAmount = riskCtx.equity * (RISK_CONFIG.riskPerTradePct / 100);
-  const qty = calculatePositionSize(riskAmount, currentPrice, stop);
+  const res = calculatePositionSize({
+    equity: riskCtx.equity,
+    availableBalance: riskCtx.availableBalance,
+    symbol: ctx.symbol,
+    entryPrice: currentPrice,
+    stopPrice: stop,
+    side: bias as any,
+    minLotSize: Number(ctx.cachedProduct?.lot_size ?? 1),
+    contractValue: Number(ctx.cachedProduct?.contract_value ?? 1),
+    inrToUsd: 1 / RISK_CONFIG.USDINR,
+  });
 
-  if (qty <= 0) {
+  if (!res || res.qty <= 0) {
     logger.warn(`[ARES.RISK] Calculated qty 0 for ${ctx.symbol}; check risk settings.`);
     return;
   }
 
+  const { qty } = res;
+
   // AI Veto Layer
+  const indicators = ctx.indicators.snapshot("15m");
+  const smcMetrics = ctx.smc.activeSweepMetrics();
 
   const vetoInput: AIVetoInput = {
     symbol: ctx.symbol,
     intent: "ENTRY",
     side: bias as any,
-    price: currentPrice,
-    indicators: ctx.indicators.snapshot("15m"),
-    structure: ctx.structure.lastBias ?? "UNKNOWN",
-    reason: `Active Displacement: ${displacement.type}`
+    lastPrice: currentPrice,
+    timeframeBias: {
+      htf: bias === "LONG" ? "BULL" : "BEAR",
+      rsi: indicators.rsi14 ?? 50,
+      emaSlope: "FLAT", // Simplified
+    },
+    volatility: {
+      atr: indicators.atr14 ?? 0,
+      atrPercentile: 50, // Placeholder
+    },
+    indicators: {
+      ema20: indicators.ema20 ?? 0,
+      ema200: indicators.ema200 ?? 0,
+      vwap: indicators.vwap ?? 0,
+    },
+    marketContext: {
+      session: "ASIA", // Placeholder
+      smc: {
+        activeSweep: ctx.smc.activeSweep?.type,
+        activeSweepAgeMinutes: smcMetrics?.ageMinutes,
+        activeSweepVolumeRatio: smcMetrics?.volumeRatio,
+        nearestBullishOb: ctx.smc.nearestOB(currentPrice, "BULLISH") ?? undefined,
+        nearestBearishOb: ctx.smc.nearestOB(currentPrice, "BEARISH") ?? undefined,
+        nearestBullishFvg: ctx.smc.nearestFVG(currentPrice, "BULLISH") ?? undefined,
+        nearestBearishFvg: ctx.smc.nearestFVG(currentPrice, "BEARISH") ?? undefined,
+      }
+    }
   };
 
   const { allowed, reason } = await aiVeto(aiClient, vetoInput);
@@ -537,21 +580,24 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
   if (set?.entryOrderId) fsm.setSignalState(SignalState.ORDER_PLACED);
 }
 
-const handleOhlcvMessage = (msg: OhlcvMessage) => {
+const handleOhlcvMessage = (msg: any) => {
   const ctx = symbolContexts.get(msg.symbol);
   if (!ctx) return;
 
-  const data = msg.data;
+  const resolution = msg.resolution ?? msg.type.split("_")[1];
+  if (process.env.LOG_LEVEL === "debug") console.log(`[ARES.MARKET] Received OHLCV for ${msg.symbol} ${resolution}`);
+
+  const candleData = msg.candle;
   const candle = {
-    timestamp: data.time * 1000,
-    open: Number(data.open),
-    high: Number(data.high),
-    low: Number(data.low),
-    close: Number(data.close),
-    volume: Number(data.volume),
+    timestamp: candleData.time * 1000,
+    open: Number(candleData.open),
+    high: Number(candleData.high),
+    low: Number(candleData.low),
+    close: Number(candleData.close),
+    volume: Number(candleData.volume),
   };
 
-  const tf = data.interval as any;
+  const tf = resolution as any;
   ctx.market.ingestCandle(tf, candle);
   
   // Update Indicators asynchronously
@@ -587,6 +633,7 @@ const handleOhlcvMessage = (msg: OhlcvMessage) => {
 const handleTickerMessage = (msg: TickerMessage) => {
   const price = tickerPrice(msg);
   if (price == null || !msg.symbol) return;
+  if (process.env.LOG_LEVEL === "debug") console.log(`[ARES.MARKET] Received Ticker for ${msg.symbol}: ${price}`);
   watchlistLtps.set(msg.symbol, price);
   const ctx = symbolContexts.get(msg.symbol);
   if (ctx) ctx.market.ingestTick(price, 0, Date.now());
