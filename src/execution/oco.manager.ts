@@ -6,7 +6,7 @@ export class OcoManager {
   constructor(
     private store: OrderStore,
     private rest: DeltaRestClient,
-    private mode: "paper" | "live",
+    private mode: "paper" | "live" | "backtest",
     private paper?: PaperExecutor
   ) {}
 

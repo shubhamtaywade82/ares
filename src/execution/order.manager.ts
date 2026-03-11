@@ -25,7 +25,7 @@ export class OrderManager {
   constructor(
     private rest: DeltaRestClient,
     private store: OrderStore,
-    private mode: "paper" | "live",
+    private mode: "paper" | "live" | "backtest",
     private paper?: PaperExecutor,
     private bracketBuilder?: BracketBuilder,
     private activePositions?: Map<string, ActivePosition>
@@ -82,6 +82,11 @@ export class OrderManager {
         clientOrderId,
       });
       logger.info(req, "[ARES.PAPER] Entry submitted");
+      return set;
+    }
+
+    if (this.mode === "backtest") {
+      logger.warn("[ARES.BACKTEST] OrderManager not used in backtest; use BacktestExecutor via adapter.");
       return set;
     }
 

@@ -587,9 +587,20 @@ const handleOhlcvMessage = (msg: any) => {
   const resolution = msg.resolution ?? msg.type.split("_")[1];
   if (process.env.LOG_LEVEL === "debug") console.log(`[ARES.MARKET] Received OHLCV for ${msg.symbol} ${resolution}`);
 
-  const candleData = msg.candle;
+  const candleData = msg.candle ?? msg;
+  
+  let rawTime = candleData.time ?? candleData.timestamp;
+  let timestamp = Number(rawTime);
+  
+  // Normalize to milliseconds:
+  // - Microseconds (16 digits): divide by 1000
+  // - Seconds (10 digits): multiply by 1000
+  // - Already Milliseconds (13 digits): keep as is
+  if (timestamp > 1e15) timestamp = Math.floor(timestamp / 1000);
+  else if (timestamp < 1e12) timestamp = timestamp * 1000;
+
   const candle = {
-    timestamp: candleData.time * 1000,
+    timestamp,
     open: Number(candleData.open),
     high: Number(candleData.high),
     low: Number(candleData.low),
