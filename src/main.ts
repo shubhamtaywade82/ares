@@ -226,8 +226,13 @@ const getStatePayload = async (): Promise<object> => {
 }
 
 const stateServer = http.createServer(async (req, res) => {
+  // Do not handle WebSocket upgrade in the request handler — let WebSocketServer take it (otherwise dashboard gets 404 and never receives state)
+  if (req.headers.upgrade === "websocket") {
+    return;
+  }
+
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
@@ -246,10 +251,132 @@ const stateServer = http.createServer(async (req, res) => {
       res.writeHead(500);
       res.end(JSON.stringify({ error: "Internal Server Error" }));
     }
-  } else {
-    res.writeHead(404);
-    res.end();
+    return;
   }
+
+  // Dev/paper only: seed one position for a symbol (e.g. ETHUSD) for monitoring. Uses market order so it fills immediately.
+  if (req.method === "POST" && req.url?.startsWith("/api/dev/seed")) {
+    if (!isSimulatedMode() || !paper) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Seed only available in paper or dev mode" }));
+      return;
+    }
+    const url = new URL(req.url ?? "", `http://localhost`);
+    const symbol = (url.searchParams.get("symbol") ?? "ETHUSD").trim().toUpperCase();
+    const ctx = symbolContexts.get(symbol);
+    if (!ctx) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Symbol ${symbol} not in watchlist` }));
+      return;
+    }
+    if (ctx.productId == null) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Product ID not resolved for ${symbol}` }));
+      return;
+    }
+    if (activePositions.has(symbol)) {
+      res.writeHead(409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Position already open for ${symbol}` }));
+      return;
+    }
+    try {
+      const riskCtx = await getRiskContext(symbol);
+      if (riskCtx.equity <= 0) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Equity <= 0; set PAPER_BALANCE" }));
+        return;
+      }
+      if (riskCtx.openTrades >= RISK_CONFIG.maxOpenTradesTotal) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Max open trades (${RISK_CONFIG.maxOpenTradesTotal}) reached` }));
+        return;
+      }
+      const currentPrice = ctx.market.lastPrice();
+      if (currentPrice <= 0) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `No price for ${symbol} yet; wait for ticker` }));
+        return;
+      }
+      const atr = ctx.indicators.snapshot("15m").atr14 ?? currentPrice * 0.02;
+      const stopDistance = atr * 1.5;
+      const bias: "LONG" | "SHORT" = "LONG";
+      const stop = bias === "LONG" ? currentPrice - stopDistance : currentPrice + stopDistance;
+      const tp = computeTargets(currentPrice, stop, bias, RISK_CONFIG.minRR);
+      const res_ = calculatePositionSize({
+        equity: riskCtx.equity,
+        availableBalance: riskCtx.availableBalance,
+        symbol,
+        entryPrice: currentPrice,
+        stopPrice: stop,
+        side: bias,
+        minLotSize: Number(ctx.cachedProduct?.lot_size ?? 1),
+        contractValue: Number(ctx.cachedProduct?.contract_value ?? 1),
+        inrToUsd: 1 / RISK_CONFIG.USDINR,
+      });
+      if (!res_ || res_.qty <= 0) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Position size 0; check risk config" }));
+        return;
+      }
+      const set = await orderManager.execute({
+        symbol,
+        productId: ctx.productId,
+        side: bias,
+        entryPrice: currentPrice,
+        qty: res_.qty,
+        stopPrice: stop,
+        targetPrice: tp,
+        useMarketEntry: true,
+        signalContext: { htfBias: bias, smcScore: 0.8, rr: RISK_CONFIG.minRR, reason: "Dev seed" },
+      });
+      // Ensure the market order fills: push a tick so paper executor fills it (in case lastPrice wasn't set yet)
+      paper.onTick(currentPrice, ctx.productId, ctx.symbol);
+      const positionCreated = activePositions.has(symbol);
+      if (positionCreated) logger.info(`[ARES.API] Seed position created for ${symbol}; activePositions now ${activePositions.size}`);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          message: `Seed position placed for ${symbol}`,
+          symbol,
+          side: bias,
+          entryOrderId: set?.entryOrderId,
+          entryPrice: currentPrice,
+          stopPrice: stop,
+          targetPrice: tp,
+          qty: res_.qty,
+          positionCreated,
+          activePositionCount: activePositions.size,
+        })
+      );
+    } catch (err) {
+      logger.error(err, "[ARES.API] Dev seed failed");
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Seed failed", detail: String(err) }));
+    }
+    return;
+  }
+
+  // Dev/paper: debug endpoint to verify active positions (GET so you can open in browser)
+  if (req.method === "GET" && req.url === "/api/dev/active-positions") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        count: activePositions.size,
+        positions: Array.from(activePositions.entries()).map(([sym, p]) => ({
+          symbol: sym,
+          side: p.side,
+          entryPrice: p.entryPrice,
+          entryQty: p.entryQty,
+          slPrice: p.slPrice,
+          tp1Price: p.tp1Price,
+        })),
+      })
+    );
+    return;
+  }
+
+  res.writeHead(404);
+  res.end();
 });
 
 const wss = new WebSocketServer({ server: stateServer });
