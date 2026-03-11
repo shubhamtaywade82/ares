@@ -1,3 +1,5 @@
+import { USD_INR_RATE } from "../finance/fx.js";
+
 export const RISK_CONFIG = {
   riskPerTradePct: 0.02,
   maxDailyLossPct: 0.05,
@@ -11,7 +13,7 @@ export const RISK_CONFIG = {
     XRPUSD: 5,
     SOLUSD: 5,
   } as Record<string, number>,
-  USDINR: 84.0,
+  USDINR: USD_INR_RATE,
   GST_RATE: 0.18,
 };
 
