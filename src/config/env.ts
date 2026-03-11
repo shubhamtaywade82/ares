@@ -25,7 +25,7 @@ const EnvSchema = z.object({
   DELTA_PRODUCT_SYMBOL: optionalString,
   DELTA_PRODUCT_SYMBOLS: optionalString,
   DELTA_PRODUCT_ID: optionalNumber,
-  TRADING_MODE: z.enum(["paper", "live", "backtest"]),
+  TRADING_MODE: z.enum(["paper", "live", "backtest", "dev"]),
   BOOT_CLOSE_ORPHAN_POSITIONS: z
     .preprocess(
       (value) =>
@@ -76,3 +76,10 @@ const EnvSchema = z.object({
 });
 
 export const env = EnvSchema.parse(process.env);
+
+/** True when running in dev mode: relaxed gates to exercise full pipeline (entries, positions, PnL, exits). */
+export const isDevMode = (): boolean => env.TRADING_MODE === "dev";
+
+/** True when execution is simulated (paper or dev). Paper/dev use PaperExecutor and persist state. */
+export const isSimulatedMode = (): boolean =>
+  env.TRADING_MODE === "paper" || env.TRADING_MODE === "dev";

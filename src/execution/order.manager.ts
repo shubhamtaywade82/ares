@@ -19,13 +19,15 @@ export class OrderManager {
       targetPrice: number;
       qty: number;
       clientOrderId: string;
+      entryPrice: number;
+      entryOrderId: string;
     }
   >();
 
   constructor(
     private rest: DeltaRestClient,
     private store: OrderStore,
-    private mode: "paper" | "live" | "backtest",
+    private mode: "paper" | "live" | "backtest" | "dev",
     private paper?: PaperExecutor,
     private bracketBuilder?: BracketBuilder,
     private activePositions?: Map<string, ActivePosition>
@@ -49,7 +51,7 @@ export class OrderManager {
       set.signalContext = req.signalContext;
     }
 
-    if (this.mode === "paper") {
+    if (this.mode === "paper" || this.mode === "dev") {
       if (!this.paper) {
         logger.warn("[ARES.PAPER] Paper executor not configured");
         return set;
@@ -80,6 +82,8 @@ export class OrderManager {
         targetPrice: req.targetPrice,
         qty: req.qty,
         clientOrderId,
+        entryPrice: req.entryPrice,
+        entryOrderId: entry.id,
       });
       logger.info(req, "[ARES.PAPER] Entry submitted");
       return set;
@@ -189,7 +193,19 @@ export class OrderManager {
   }
 
   onPaperOrderUpdate(orderId: string, status: string) {
-    if (this.mode !== "paper" || status !== "closed") return;
+    if ((this.mode !== "paper" && this.mode !== "dev") || status !== "closed") return;
+
+    // If this is an SL/TP fill, remove the position from activePositions so dashboard updates
+    if (this.activePositions) {
+      for (const [symbol, pos] of this.activePositions) {
+        if (pos.slOrderId === orderId || pos.tp1OrderId === orderId || pos.tp2OrderId === orderId) {
+          this.activePositions.delete(symbol);
+          logger.info(`[ARES.PAPER] Position ${symbol} closed (order ${orderId}); removed from active positions`);
+          return;
+        }
+      }
+    }
+
     const pending = this.pendingPaperBrackets.get(orderId);
     if (!pending || !this.paper) return;
 
@@ -211,6 +227,40 @@ export class OrderManager {
     set.targetOrderId = tp.id;
     this.pendingPaperBrackets.delete(orderId);
     logger.info("[ARES.PAPER] Bracket orders submitted");
+
+    // So dashboard shows active positions in paper/dev: add to activePositions (same shape as live)
+    if (this.activePositions) {
+      const symbolKey = pending.symbol.toUpperCase();
+      const side = pending.side === "LONG" ? "buy" : "sell";
+      this.activePositions.set(symbolKey, {
+        entryOrderId: pending.entryOrderId,
+        symbol: symbolKey,
+        side,
+        entryPrice: pending.entryPrice,
+        entryQty: pending.qty,
+        filledQty: pending.qty,
+        entryTime: Date.now(),
+        stage: "OPEN_FULL",
+        slPrice: pending.stopPrice,
+        tp1Price: pending.targetPrice,
+        tp2Price: pending.targetPrice,
+        slOrderId: stop.id,
+        tp1OrderId: null,
+        tp2OrderId: tp.id,
+        beSlOrderId: null,
+        tp1FillPrice: null,
+        tp1FillQty: null,
+        tp1FilledTime: null,
+        tp2FillPrice: null,
+        tp2FillQty: null,
+        tp2FilledTime: null,
+        slFillPrice: null,
+        slFillQty: null,
+        slFilledTime: null,
+        signal: set.signalContext ?? { htfBias: "UNKNOWN", smcScore: 0, rr: 0, reason: "n/a" },
+      });
+    }
+
     this.paper.setPositionBrackets(undefined, pending.symbol, pending.stopPrice, pending.targetPrice);
   }
 }

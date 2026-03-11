@@ -16,7 +16,7 @@ import { DeltaRestClient } from "./delta/rest.client.js";
 import { DeltaWsClient } from "./delta/ws.client.js";
 import { MarketCache } from "./market/market.cache.js";
 import { bootstrapMarket } from "./market/bootstrap.js";
-import { env } from "./config/env.js";
+import { env, isDevMode, isSimulatedMode } from "./config/env.js";
 import { KillSwitch } from "./risk/kill.switch.js";
 import { KillReason } from "./risk/kill.reasons.js";
 import { IndicatorCache } from "./indicators/indicator.cache.js";
@@ -93,7 +93,7 @@ const orderStore = new OrderStore();
 const positions = new PositionStore();
 const pnl = new PnlTracker();
 const fsm = new ARESStateMachine();
-const paper = env.TRADING_MODE === "paper" ? new PaperExecutor(positions, pnl) : undefined;
+const paper = isSimulatedMode() ? new PaperExecutor(positions, pnl) : undefined;
 const ocoManager = new OcoManager(orderStore, rest, env.TRADING_MODE, paper);
 const activePositions = new Map<string, ActivePosition>();
 const bracketBuilder = new BracketBuilder(rest);
@@ -123,11 +123,11 @@ let dailyPnlBaseline = 0;
 
 const getRiskContext = async (symbol: string): Promise<RiskContext> => {
   let balance =
-    env.TRADING_MODE === "paper"
+    isSimulatedMode()
       ? env.PAPER_BALANCE ?? cachedBalance ?? 0
       : cachedBalance ?? 0;
 
-  if (env.TRADING_MODE !== "paper") {
+  if (!isSimulatedMode()) {
     try {
       const res = await rest.getBalances();
       const balances = Array.isArray(res?.result) ? res.result : [];
@@ -146,7 +146,7 @@ const getRiskContext = async (symbol: string): Promise<RiskContext> => {
     }
   }
 
-  if (env.TRADING_MODE === "paper" && balance <= 0 && env.PAPER_BALANCE != null) {
+  if (isSimulatedMode() && balance <= 0 && env.PAPER_BALANCE != null) {
       balance = env.PAPER_BALANCE;
       cachedBalance = balance;
   }
@@ -154,7 +154,7 @@ const getRiskContext = async (symbol: string): Promise<RiskContext> => {
   let equity = balance;
   let availableBalance = balance;
 
-  if (env.TRADING_MODE === "paper") {
+  if (isSimulatedMode()) {
     equity = balance + pnl.value;
     let usedMargin = 0;
     for (const pos of positions.all()) {
@@ -178,13 +178,13 @@ const getRiskContext = async (symbol: string): Promise<RiskContext> => {
     availableBalance,
     openTrades,
     openTradesBySymbol,
-    dailyPnl: env.TRADING_MODE === "paper" ? pnl.value - dailyPnlBaseline : 0,
+    dailyPnl: isSimulatedMode() ? pnl.value - dailyPnlBaseline : 0,
   };
 }
 
 const countOpenTradesBySymbol = (symbol: string): number => {
   const key = symbol.toUpperCase();
-  if (env.TRADING_MODE === "paper") {
+  if (isSimulatedMode()) {
     return positions.all().filter((pos) => pos.productSymbol?.toUpperCase() === key).length;
   }
   const pos = livePositions.get(key);
@@ -281,7 +281,7 @@ const resolveProductIdBySymbol = async (restClient: DeltaRestClient, symbol: str
 }
 
 const persistState = async () => {
-    if (env.TRADING_MODE === "paper") {
+    if (isSimulatedMode()) {
       await savePaperState({ realizedPnl: pnl.value, positions: positions.all() });
     }
 }
@@ -322,7 +322,7 @@ const bootstrap = async () => {
     logger.info("[ARES.AI] AI Client connected and healthy.");
   }
 
-  if (env.TRADING_MODE === "paper") {
+  if (isSimulatedMode()) {
     const saved = await loadPaperState();
     if (saved) {
       pnl.hydrate(saved.realizedPnl);
@@ -424,6 +424,9 @@ const bootstrap = async () => {
   });
 
   logger.info("[ARES.BOOT] System ready; transitioning to RUNNING");
+  if (isDevMode()) {
+    logger.info("[ARES.DEV] Dev mode active — relaxed gates (daily loss, bias, displacement, AI veto) to exercise full pipeline: entries, positions, brackets, exits, PnL");
+  }
   fsm.setSystemState(SystemState.RUNNING);
   ws.connect();
 }
@@ -436,19 +439,23 @@ const scanSymbol = async (ctx: SymbolContext) => {
 
   const riskCtx = await getRiskContext(ctx.symbol);
   
-  // Daily Loss Check (percentage based)
-  if (riskCtx.dailyPnl <= -(riskCtx.equity * RISK_CONFIG.maxDailyLossPct)) {
+  // Daily Loss Check (percentage based) — skipped in dev so we can exercise full pipeline
+  if (!isDevMode() && riskCtx.dailyPnl <= -(riskCtx.equity * RISK_CONFIG.maxDailyLossPct)) {
     KillSwitch.trigger(KillReason.MAX_DAILY_LOSS, { pnl: riskCtx.dailyPnl });
     return;
   }
 
   const bias = computeHTFBias(ctx.market, ctx.indicators);
-  if (bias === "NONE") {
+  // In dev mode, force a direction when strategy returns NONE so we can test entries/exits
+  const effectiveBias = (bias === "NONE" && isDevMode())
+    ? (env.FORCE_HTF_BIAS === "SHORT" ? "SHORT" : "LONG")
+    : bias;
+  if (effectiveBias === "NONE") {
     fsm.setMarketRegime(MarketRegime.UNKNOWN);
     return;
   }
 
-  fsm.setMarketRegime(bias === "LONG" ? MarketRegime.TRENDING_BULL : MarketRegime.TRENDING_BEAR);
+  fsm.setMarketRegime(effectiveBias === "LONG" ? MarketRegime.TRENDING_BULL : MarketRegime.TRENDING_BEAR);
 
   // Update structure and SMC context (15m execution TF)
   const candles15m = ctx.market.candles("15m");
@@ -476,13 +483,29 @@ const scanSymbol = async (ctx: SymbolContext) => {
       { fvgs: ctx.smc.lastFVGs, sweeps: ctx.smc.lastSweeps, currentBarIndex: candles15m.length }
     ) : null;
 
-  if (activeDisplacement) {
-    logger.info(`[ARES.STRATEGY] ACTIVE displacement detected for ${ctx.symbol}: ${activeDisplacement.type}`);
+  // In dev mode: if no real displacement but we have bias and enough data, use a synthetic displacement so the full pipeline runs (entry → position → brackets → exits → PnL)
+  const displacement = activeDisplacement ?? (isDevMode() && candles15m.length >= 20 && (atr ?? 0) > 0
+    ? {
+        type: effectiveBias,
+        pullbackZone: {
+          entry: currentPrice,
+          stop: effectiveBias === "LONG"
+            ? currentPrice - (atr! * 1.5)
+            : currentPrice + (atr! * 1.5),
+        },
+      }
+    : null);
+
+  if (displacement) {
+    if (activeDisplacement) {
+      logger.info(`[ARES.STRATEGY] ACTIVE displacement detected for ${ctx.symbol}: ${activeDisplacement.type}`);
+    } else {
+      logger.info(`[ARES.DEV] Synthetic displacement for ${ctx.symbol} (bias=${effectiveBias}) — exercising full pipeline`);
+    }
     fsm.setSignalState(SignalState.READY_TO_EXECUTE);
-    // Trigger execution logic here...
-    await executeEntry(ctx, bias, activeDisplacement);
+    await executeEntry(ctx, effectiveBias, displacement);
   }
-}
+};
 
 const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any) => {
   const riskCtx = await getRiskContext(ctx.symbol);
@@ -562,8 +585,12 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
   pushAiAnalysis(ctx.symbol, "ENTRY", allowed, reason);
 
   if (!allowed) {
-    fsm.setSignalState(SignalState.IDLE);
-    return;
+    if (isDevMode()) {
+      logger.info("[ARES.DEV] AI veto bypassed — placing entry to exercise full pipeline");
+    } else {
+      fsm.setSignalState(SignalState.IDLE);
+      return;
+    }
   }
 
   const set = await orderManager.execute({
