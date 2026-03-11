@@ -25,7 +25,7 @@ const EnvSchema = z.object({
   DELTA_PRODUCT_SYMBOL: optionalString,
   DELTA_PRODUCT_SYMBOLS: optionalString,
   DELTA_PRODUCT_ID: optionalNumber,
-  TRADING_MODE: z.enum(["paper", "live"]),
+  TRADING_MODE: z.enum(["paper", "live", "backtest"]),
   BOOT_CLOSE_ORPHAN_POSITIONS: z
     .preprocess(
       (value) =>
