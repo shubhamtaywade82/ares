@@ -16,7 +16,7 @@ import { DeltaRestClient } from "./delta/rest.client.js";
 import { DeltaWsClient } from "./delta/ws.client.js";
 import { MarketCache } from "./market/market.cache.js";
 import { bootstrapMarket } from "./market/bootstrap.js";
-import { env, isDevMode, isSimulatedMode } from "./config/env.js";
+import { env, isDevMode, isSimulatedMode, isTestFlowMode } from "./config/env.js";
 import { KillSwitch } from "./risk/kill.switch.js";
 import { KillReason } from "./risk/kill.reasons.js";
 import { IndicatorCache } from "./indicators/indicator.cache.js";
@@ -528,7 +528,19 @@ const bootstrap = async () => {
   );
 
   if (paper) {
-    paper.setOnStateChange(persistState);
+    paper.setOnStateChange(async () => {
+      await persistState();
+      // In test_flow mode, if we had a position and now it's gone, we've completed the cycle.
+      if (isTestFlowMode() && positions.all().length === 0 && pnl.value !== dailyPnlBaseline) {
+        const finalPnl = pnl.value - dailyPnlBaseline;
+        logger.info("================================================================");
+        logger.info("TEST FLOW COMPLETED SUCCESSFULLY");
+        logger.info(`Final Realized PnL: ₹${finalPnl.toFixed(2)}`);
+        logger.info("The full lifecycle (entry -> position -> exit) has been verified.");
+        logger.info("================================================================");
+        setTimeout(() => process.exit(0), 1000); // Small delay for logs to flush
+      }
+    });
     paper.setOnOrderUpdate((orderId, status) => {
       orderManager.onPaperOrderUpdate(orderId, status);
       void ocoManager.onOrderUpdate(orderId, status);
@@ -551,7 +563,9 @@ const bootstrap = async () => {
   });
 
   logger.info("[ARES.BOOT] System ready; transitioning to RUNNING");
-  if (isDevMode()) {
+  if (isTestFlowMode()) {
+    logger.info("[ARES.TEST] TEST_FLOW mode active — will force immediate entry and tight exit to verify full pipeline");
+  } else if (isDevMode()) {
     logger.info("[ARES.DEV] Dev mode active — relaxed gates (daily loss, bias, displacement, AI veto) to exercise full pipeline: entries, positions, brackets, exits, PnL");
   }
   fsm.setSystemState(SystemState.RUNNING);
@@ -610,15 +624,15 @@ const scanSymbol = async (ctx: SymbolContext) => {
       { fvgs: ctx.smc.lastFVGs, sweeps: ctx.smc.lastSweeps, currentBarIndex: candles15m.length }
     ) : null;
 
-  // In dev mode: if no real displacement but we have bias and enough data, use a synthetic displacement so the full pipeline runs (entry → position → brackets → exits → PnL)
-  const displacement = activeDisplacement ?? (isDevMode() && candles15m.length >= 20 && (atr ?? 0) > 0
+  // In dev/test_flow mode: if no real displacement but we have bias and enough data, use a synthetic displacement so the full pipeline runs (entry → position → brackets → exits → PnL)
+  const displacement = activeDisplacement ?? ((isDevMode() && candles15m.length >= 2) && (isTestFlowMode() || (candles15m.length >= 20 && (atr ?? 0) > 0))
     ? {
         type: effectiveBias,
         pullbackZone: {
           entry: currentPrice,
           stop: effectiveBias === "LONG"
-            ? currentPrice - (atr! * 1.5)
-            : currentPrice + (atr! * 1.5),
+            ? currentPrice - (Math.max(atr ?? 0, currentPrice * 0.001) * 1.5)
+            : currentPrice + (Math.max(atr ?? 0, currentPrice * 0.001) * 1.5),
         },
       }
     : null);
@@ -627,7 +641,7 @@ const scanSymbol = async (ctx: SymbolContext) => {
     if (activeDisplacement) {
       logger.info(`[ARES.STRATEGY] ACTIVE displacement detected for ${ctx.symbol}: ${activeDisplacement.type}`);
     } else {
-      logger.info(`[ARES.DEV] Synthetic displacement for ${ctx.symbol} (bias=${effectiveBias}) — exercising full pipeline`);
+      logger.info(`[ARES.${isTestFlowMode() ? "TEST" : "DEV"}] Synthetic displacement for ${ctx.symbol} (bias=${effectiveBias}) — exercising full pipeline`);
     }
     fsm.setSignalState(SignalState.READY_TO_EXECUTE);
     await executeEntry(ctx, effectiveBias, displacement);
@@ -648,8 +662,16 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
   if (activePositions.has(ctx.symbol.toUpperCase())) return;
 
   const currentPrice = ctx.market.lastPrice();
-  const stop = displacement.pullbackZone.stop;
-  const tp = computeTargets(currentPrice, stop, bias as any, RISK_CONFIG.minRR);
+  let stop = displacement.pullbackZone.stop;
+  let tp = computeTargets(currentPrice, stop, bias as any, RISK_CONFIG.minRR);
+
+  // In TEST_FLOW mode, force very tight TP/SL to see the exit quickly
+  if (isTestFlowMode()) {
+    const tinyRisk = currentPrice * 0.0005; // 0.05%
+    stop = bias === "LONG" ? currentPrice - tinyRisk : currentPrice + tinyRisk;
+    tp = bias === "LONG" ? currentPrice + tinyRisk : currentPrice - tinyRisk;
+    logger.info(`[ARES.TEST] Forcing tight targets: Entry:${currentPrice.toFixed(2)} SL:${stop.toFixed(2)} TP:${tp.toFixed(2)}`);
+  }
 
   // Position Sizing
   const res = calculatePositionSize({

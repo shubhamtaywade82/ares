@@ -27,7 +27,7 @@ export class OrderManager {
   constructor(
     private rest: DeltaRestClient,
     private store: OrderStore,
-    private mode: "paper" | "live" | "backtest" | "dev",
+    private mode: "paper" | "live" | "backtest" | "dev" | "test_flow",
     private paper?: PaperExecutor,
     private bracketBuilder?: BracketBuilder,
     private activePositions?: Map<string, ActivePosition>
@@ -51,7 +51,7 @@ export class OrderManager {
       set.signalContext = req.signalContext;
     }
 
-    if (this.mode === "paper" || this.mode === "dev") {
+    if (this.mode === "paper" || this.mode === "dev" || this.mode === "test_flow") {
       if (!this.paper) {
         logger.warn("[ARES.PAPER] Paper executor not configured");
         return set;
@@ -193,7 +193,7 @@ export class OrderManager {
   }
 
   onPaperOrderUpdate(orderId: string, status: string) {
-    if ((this.mode !== "paper" && this.mode !== "dev") || status !== "closed") return;
+    if ((this.mode !== "paper" && this.mode !== "dev" && this.mode !== "test_flow") || status !== "closed") return;
 
     // If this is an SL/TP fill, remove the position from activePositions so dashboard updates
     if (this.activePositions) {
