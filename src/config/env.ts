@@ -73,6 +73,16 @@ const EnvSchema = z.object({
       z.coerce.boolean().optional()
     )
     .default(false),
+  /** In paper mode, allow synthetic displacement so entries can fire without real SMC displacement (for pipeline testing). */
+  PAPER_SYNTHETIC_DISPLACEMENT: z
+    .preprocess(
+      (value) =>
+        typeof value === "string" && value.trim() === ""
+          ? undefined
+          : value,
+      z.coerce.boolean().optional()
+    )
+    .default(false),
 });
 
 export const env = EnvSchema.parse(process.env);

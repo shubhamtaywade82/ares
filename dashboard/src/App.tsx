@@ -71,6 +71,18 @@ interface AiAnalysisEntry {
   timestamp: number;
 }
 
+interface SmcSymbolData {
+  bias: string;
+  swings: Array<{ price: number; type: string; index: number }>;
+  breaks: Array<{ type: string; price: number; timestamp: number }>;
+  fvgs: Array<{ type: string; top: number; bottom: number; isFilled: boolean }>;
+  orderBlocks: Array<{ type: string; top: number; bottom: number; isMitigated: boolean }>;
+  sweeps: Array<{ type: string; reference: number; timestamp: number }>;
+  activeSweep: { type: string; reference: number } | null;
+  sweepMetrics: { ageBars: number; ageMinutes: number; volumeRatio: number } | null;
+  displacement: { type: string; strength: number; pullbackZone?: { entry: number; stop: number } } | null;
+}
+
 /** Show real numeric value without fixed decimal rounding */
 function formatRaw(n: number): string {
   return Number.isFinite(n) ? String(n) : '—';
@@ -330,7 +342,7 @@ const PositionTable = ({ positions }: { positions: Position[] }) => (
               <td className="px-6 py-4 text-right">
                 <FlashValue value={p.pnl}>
                   <div className={`flex flex-col items-end gap-0.5 ${p.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    <span className="font-black text-sm tabular-nums tracking-tighter">${formatRaw(p.pnl)}</span>
+                    <span className="font-black text-sm tabular-nums tracking-tighter">₹{formatRaw(p.pnl)}</span>
                     <span className="text-[10px] font-bold opacity-70">({formatRaw(p.pnlPercent)}%)</span>
                   </div>
                 </FlashValue>
@@ -361,7 +373,7 @@ const TradeHistoryList = ({ history }: { history: TradeHistoryItem[] }) => (
           </div>
           <div className="flex flex-col items-end gap-1">
             <span className={`text-xs font-black ${t.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-              {t.pnl >= 0 ? '+' : ''}${formatRaw(t.pnl)}
+              {t.pnl >= 0 ? '+' : ''}₹{formatRaw(t.pnl)}
             </span>
             <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${
               t.status === 'TP' ? 'bg-emerald-500/10 text-emerald-500' :
@@ -377,6 +389,100 @@ const TradeHistoryList = ({ history }: { history: TradeHistoryItem[] }) => (
   </div>
 );
 
+const SmcPanel = ({ smcData }: { smcData: Record<string, SmcSymbolData> }) => {
+  const symbols = Object.keys(smcData);
+  if (symbols.length === 0) return null;
+
+  return (
+    <div className="glass overflow-hidden">
+      <div className="px-6 py-4 border-b border-white/5 flex items-center gap-2 bg-gradient-to-r from-amber-500/10 to-orange-500/10 border-l-4 border-l-amber-500/60">
+        <Layers size={18} className="text-amber-400" />
+        <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">SMC Live</h3>
+        <span className="text-[10px] text-slate-500">Smart Money Concepts</span>
+      </div>
+      <div className="divide-y divide-white/5">
+        {symbols.map((symbol) => {
+          const d = smcData[symbol];
+          if (!d) return null;
+          const biasColor = d.bias === 'BULLISH' ? 'text-emerald-400' : d.bias === 'BEARISH' ? 'text-rose-400' : 'text-slate-500';
+          return (
+            <div key={symbol} className="px-6 py-4">
+              <div className="flex items-center gap-3 mb-3">
+                <span className="text-sm font-black">{symbol}</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded font-black uppercase ${biasColor} ${d.bias === 'BULLISH' ? 'bg-emerald-500/10' : d.bias === 'BEARISH' ? 'bg-rose-500/10' : 'bg-slate-500/10'}`}>
+                  {d.bias}
+                </span>
+                {d.activeSweep && (
+                  <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${d.activeSweep.type === 'BULL_TRAP' ? 'bg-rose-500/20 text-rose-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                    {d.activeSweep.type}
+                  </span>
+                )}
+                {d.displacement && (
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold">
+                    DISP {d.displacement.strength?.toFixed(1)}x
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 text-[10px]">
+                {/* FVGs */}
+                <div>
+                  <span className="text-slate-500 font-bold uppercase block mb-1">FVGs</span>
+                  {d.fvgs.length === 0 ? (
+                    <span className="text-slate-600">None</span>
+                  ) : d.fvgs.map((f, i) => (
+                    <div key={i} className={`flex items-center gap-1 ${f.type === 'BULLISH' ? 'text-emerald-500/80' : 'text-rose-500/80'}`}>
+                      <span className="font-mono">{f.bottom.toFixed(2)}-{f.top.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Order Blocks */}
+                <div>
+                  <span className="text-slate-500 font-bold uppercase block mb-1">OBs</span>
+                  {d.orderBlocks.length === 0 ? (
+                    <span className="text-slate-600">None</span>
+                  ) : d.orderBlocks.map((ob, i) => (
+                    <div key={i} className={`flex items-center gap-1 ${ob.type === 'BULLISH' ? 'text-emerald-500/80' : 'text-rose-500/80'}`}>
+                      <span className="font-mono">{ob.bottom.toFixed(2)}-{ob.top.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Sweeps + Metrics */}
+                <div>
+                  <span className="text-slate-500 font-bold uppercase block mb-1">Sweeps</span>
+                  {d.sweeps.length === 0 ? (
+                    <span className="text-slate-600">None</span>
+                  ) : d.sweeps.map((s, i) => (
+                    <div key={i} className={`${s.type === 'BEAR_TRAP' ? 'text-emerald-500/80' : 'text-rose-500/80'}`}>
+                      <span className="font-mono">{s.type} @{s.reference.toFixed(2)}</span>
+                    </div>
+                  ))}
+                  {d.sweepMetrics && (
+                    <div className="text-slate-500 mt-1 font-mono">
+                      {d.sweepMetrics.ageBars}bars | vol:{d.sweepMetrics.volumeRatio.toFixed(1)}x
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Displacement pullback zone */}
+              {d.displacement?.pullbackZone && (
+                <div className="mt-2 px-3 py-2 rounded bg-amber-500/5 border border-amber-500/10 flex items-center gap-4 text-[10px]">
+                  <span className="text-amber-500 font-bold uppercase">Pullback Zone</span>
+                  <span className="text-slate-400 font-mono">Entry: {d.displacement.pullbackZone.entry.toFixed(2)}</span>
+                  <span className="text-slate-400 font-mono">Stop: {d.displacement.pullbackZone.stop.toFixed(2)}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 interface State {
   snapshot: Snapshot;
   portfolio: {
@@ -390,6 +496,7 @@ interface State {
   history: TradeHistoryItem[];
   marketTickers: MarketTicker[];
   aiAnalysis: AiAnalysisEntry[];
+  smcData: Record<string, SmcSymbolData>;
 }
 
 function App() {
@@ -414,6 +521,7 @@ function App() {
     history: [],
     marketTickers: [],
     aiAnalysis: [],
+    smcData: {},
   });
 
   const [error, setError] = useState<string | null>(null);
@@ -492,7 +600,7 @@ function App() {
               entryPrice: Number(h.entryPrice ?? 0),
               exitPrice: Number(h.slFilledPrice ?? h.tp1FilledPrice ?? h.entryPrice ?? 0),
               pnl: Number(h.realizedPnl ?? h.pnl ?? 0),
-              status: (h.exitReason === 'TP1' || h.exitReason === 'TP2' ? 'TP' : h.exitReason === 'SL' ? 'SL' : 'FORCE_CLOSED') as 'TP' | 'SL' | 'FORCE_CLOSED',
+              status: (h.exitReason === 'TP1' || h.exitReason === 'TP2' || h.exitReason === 'PROFIT_TARGET' ? 'TP' : h.exitReason === 'SL' ? 'SL' : 'FORCE_CLOSED') as 'TP' | 'SL' | 'FORCE_CLOSED',
               time: new Date(Number(h.closedTime ?? h.entryTime ?? 0)).toLocaleTimeString(),
             })),
             marketTickers: Array.isArray(data.market?.tickers)
@@ -510,6 +618,7 @@ function App() {
                   timestamp: Number(a.timestamp ?? 0),
                 }))
               : [],
+            smcData: (data.smcData && typeof data.smcData === 'object') ? data.smcData as Record<string, SmcSymbolData> : {},
           });
         } catch {
           // ignore invalid JSON
@@ -534,7 +643,7 @@ function App() {
     };
   }, []);
 
-  const { snapshot, portfolio, activePositions, history, marketTickers, aiAnalysis } = state;
+  const { snapshot, portfolio, activePositions, history, marketTickers, aiAnalysis, smcData } = state;
   const totalBalance = portfolio.balance;
   const totalPnl = portfolio.totalPnl;
   const dailyPnl = portfolio.dailyPnl;
@@ -586,9 +695,9 @@ function App() {
 
         {/* Portfolio Summary */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <MetricCard title="Equity Balance" value={`$${formatRaw(totalBalance)}`} icon={Wallet} color="blue" />
-          <MetricCard title="Total PnL" value={`$${formatRaw(totalPnl)}`} subValue={`${formatRaw(portfolio.winRate)} WR`} icon={BarChart3} color="emerald" trend="up" />
-          <MetricCard title="Daily PnL" value={`$${formatRaw(dailyPnl)}`} icon={TrendingUp} color="emerald" trend="up" />
+          <MetricCard title="Equity Balance" value={`₹${formatRaw(totalBalance)}`} icon={Wallet} color="blue" />
+          <MetricCard title="Total PnL" value={`₹${formatRaw(totalPnl)}`} subValue={`${formatRaw(portfolio.winRate)} WR`} icon={BarChart3} color="emerald" trend="up" />
+          <MetricCard title="Daily PnL" value={`₹${formatRaw(dailyPnl)}`} icon={TrendingUp} color="emerald" trend="up" />
           <MetricCard title="Active Signals" value={String(activePositions.length)} subValue="ScanActive" icon={Activity} color="purple" trend="up" />
         </div>
 
@@ -633,6 +742,11 @@ function App() {
 
             <section>
               <PositionTable positions={activePositions} />
+            </section>
+
+            {/* SMC Live Data */}
+            <section>
+              <SmcPanel smcData={smcData} />
             </section>
 
             <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
