@@ -105,6 +105,8 @@ const fsm = new ARESStateMachine();
 const paper = isSimulatedMode() ? new PaperExecutor(positions, pnl) : undefined;
 const ocoManager = new OcoManager(orderStore, rest, env.TRADING_MODE, paper);
 const activePositions = new Map<string, ActivePosition>();
+/** Per-symbol entry lock — prevents multiple concurrent executeEntry() calls from opening duplicate positions. */
+const entryLocks = new Set<string>();
 const bracketBuilder = new BracketBuilder(rest);
 const tradeJournal = new TradeJournal();
 const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE, paper, bracketBuilder, activePositions);
@@ -939,6 +941,23 @@ const scanSymbolInner = async (ctx: SymbolContext) => {
 };
 
 const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any) => {
+  const sym = ctx.symbol.toUpperCase();
+
+  // Prevent duplicate entries: check both active positions and pending entry lock
+  if (activePositions.has(sym)) return;
+  if (entryLocks.has(sym)) return;
+  // Also check position store (populated immediately on paper fill)
+  if (positions.all().some((p) => p.productSymbol?.toUpperCase() === sym)) return;
+
+  entryLocks.add(sym);
+  try {
+    await executeEntryInner(ctx, bias, displacement);
+  } finally {
+    entryLocks.delete(sym);
+  }
+};
+
+const executeEntryInner = async (ctx: SymbolContext, bias: string, displacement: any) => {
   const riskCtx = await getRiskContext(ctx.symbol);
   if (riskCtx.equity <= 0) return;
 
@@ -948,11 +967,12 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
     return;
   }
 
-  // Prevent duplicate entries for same symbol
-  if (activePositions.has(ctx.symbol.toUpperCase())) return;
-
   const currentPrice = ctx.market.lastPrice();
+  if (!currentPrice || currentPrice <= 0) return; // No market data yet — skip entry
+
   let stop = displacement.pullbackZone.stop;
+  if (!stop || stop <= 0) return; // Invalid stop — skip entry
+
   let tp = computeTargets(currentPrice, stop, bias as any, RISK_CONFIG.minRR);
 
   // In TEST_FLOW mode, force very tight TP/SL to see the exit quickly
@@ -1043,6 +1063,7 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
     qty,
     stopPrice: stop,
     targetPrice: tp,
+    useMarketEntry: env.PAPER_MARKET_ENTRY,
     signalContext: { htfBias: bias, smcScore: 0.8, rr: RISK_CONFIG.minRR, reason: "Active Displacement" }
   });
 
