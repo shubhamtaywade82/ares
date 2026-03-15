@@ -55,17 +55,18 @@ const determineSide = async (symbol: string): Promise<"buy" | "sell" | null> => 
   const indicators = new IndicatorCache(market);
   await Promise.all([indicators.update("5m"), indicators.update("15m")]);
 
-  const signal = await runStrategy(market, indicators);
-  if (!signal) {
+  const result = await runStrategy(market, indicators);
+  if (!result) {
     console.warn(
       `[ARES.${MODE_TAG}] No strategy setup detected for ${symbol}; skipping trade`
     );
     return null;
   }
 
-  const side: "buy" | "sell" = signal.side === "LONG" ? "buy" : "sell";
+  const side: "buy" | "sell" =
+    result.setup.side === "LONG" ? "buy" : "sell";
   console.log(
-    `[ARES.${MODE_TAG}] Strategy selected side=${signal.side} → order side=${side.toUpperCase()}`
+    `[ARES.${MODE_TAG}] Strategy selected side=${result.setup.side} → order side=${side.toUpperCase()}`
   );
 
   return side;

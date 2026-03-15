@@ -37,6 +37,13 @@ import { PnlTracker } from "./state/pnl.tracker.js";
 import { OcoManager } from "./execution/oco.manager.js";
 import { StructureAnalyzer } from "./strategy/structure.js";
 import { SmcAnalyzer } from "./strategy/smc.js";
+import { getRuntimeTier, setRuntimeTier } from "./config/runtime.js";
+import type { AggressionTier } from "./config/runtime.js";
+import {
+  SmcStateSnapshot,
+  evaluateTierReadiness,
+  TIER_REQUIREMENTS,
+} from "./strategy/tier.filter.js";
 import { savePaperState, loadPaperState } from "./state/persistence.js";
 import { BracketBuilder } from "./execution/bracket.builder.js";
 import { TradeJournal } from "./execution/trade.journal.js";
@@ -214,6 +221,55 @@ const countOpenTradesBySymbol = (symbol: string): number => {
 
 const API_PORT = 3001;
 
+const buildSmcSnapshot = (
+  ctx: SymbolContext,
+  effectiveBias: string
+): SmcStateSnapshot => {
+  const currentPrice = ctx.market.lastPrice();
+  const pd = ctx.structure.premiumDiscount(currentPrice);
+
+  const isLong = effectiveBias === "LONG";
+  const premiumDiscountAligned =
+    pd !== null &&
+    pd.zone !== "EQUILIBRIUM" &&
+    ((isLong && pd.zone === "DISCOUNT") || (!isLong && pd.zone === "PREMIUM"));
+
+  return {
+    htfBiasAligned: effectiveBias !== "NONE",
+    inObZone: !!ctx.smc.nearestOB(
+      currentPrice,
+      isLong ? "BULLISH" : "BEARISH"
+    )?.isInside,
+    inFvgZone: !!ctx.smc.nearestFVG(
+      currentPrice,
+      isLong ? "BULLISH" : "BEARISH"
+    )?.isInside,
+    sweepDetected: ctx.smc.activeSweep !== undefined,
+    displacementDetected: ctx.smc.lastDisplacement !== null,
+    bosConfirmed: ctx.structure.lastBreaks.some((b) =>
+      isLong
+        ? b.side === "UP" && b.type === "BOS"
+        : b.side === "DOWN" && b.type === "BOS"
+    ),
+    breakerConfluence: !!ctx.smc.nearestBreaker(
+      currentPrice,
+      isLong ? "BULLISH" : "BEARISH"
+    )?.isInside,
+    inducementDetected: (() => {
+      const ind = ctx.smc.activeInducement;
+      if (!ind) return false;
+      return (
+        (isLong &&
+          ind.type === "BEAR_INDUCEMENT" &&
+          ind.isSwept) ||
+        (!isLong && ind.type === "BULL_INDUCEMENT" && ind.isSwept)
+      );
+    })(),
+    premiumDiscountAligned,
+    premiumDiscount: pd,
+  };
+};
+
 const getStatePayload = async (): Promise<object> => {
   const riskCtx = await getRiskContext("BTCUSD");
   const snapshot = fsm.getSnapshot();
@@ -255,20 +311,59 @@ const getStatePayload = async (): Promise<object> => {
     market: { tickers },
     aiAnalysis: aiAnalysisLog.slice(0, 15),
     smcData: Object.fromEntries(
-      Array.from(symbolContexts.entries()).map(([symbol, ctx]) => [
-        symbol,
-        {
-          bias: ctx.structure.lastBias,
-          swings: ctx.structure.lastSwings.slice(-5),
-          breaks: ctx.structure.lastBreaks.slice(-3),
-          fvgs: ctx.smc.lastFVGs,
-          orderBlocks: ctx.smc.lastOBs,
-          sweeps: ctx.smc.lastSweeps.slice(-3),
-          activeSweep: ctx.smc.activeSweep ?? null,
-          sweepMetrics: ctx.smc.activeSweepMetrics(),
-          displacement: ctx.smc.lastDisplacement,
-        },
-      ])
+      Array.from(symbolContexts.entries()).map(([symbol, ctx]) => {
+        const currentPrice = watchlistLtps.get(symbol) ?? ctx.market.lastPrice();
+        const pd = ctx.structure.premiumDiscount(currentPrice);
+        const bias = ctx.structure.lastBias;
+        const effectiveBias =
+          bias === "BULLISH" ? "LONG" : bias === "BEARISH" ? "SHORT" : "NONE";
+        const snapshot = buildSmcSnapshot(ctx, effectiveBias);
+        const tier = getRuntimeTier();
+        const tierResult = evaluateTierReadiness(tier, snapshot);
+        const conditionNames: Array<{
+          key: keyof typeof TIER_REQUIREMENTS.aggressive;
+          label: string;
+        }> = [
+          { key: "htfBias", label: "HTF Bias" },
+          { key: "obOrFvgZone", label: "OB/FVG Zone" },
+          { key: "sweep", label: "Sweep" },
+          { key: "displacement", label: "Displacement" },
+          { key: "bos", label: "BOS" },
+          { key: "breaker", label: "Breaker" },
+          { key: "inducement", label: "Inducement" },
+          { key: "premiumDiscount", label: "Prem/Discount" },
+        ];
+        const reqs = TIER_REQUIREMENTS[tier];
+        const conditions = conditionNames
+          .filter(({ key }) => reqs[key] !== "ignored")
+          .map(({ key, label }) => ({
+            name: label,
+            met: tierResult.met.includes(key),
+            required: reqs[key] === "required",
+          }));
+        return [
+          symbol,
+          {
+            bias: ctx.structure.lastBias,
+            swings: ctx.structure.lastSwings.slice(-5),
+            breaks: ctx.structure.lastBreaks.slice(-3),
+            fvgs: ctx.smc.lastFVGs,
+            orderBlocks: ctx.smc.lastOBs,
+            sweeps: ctx.smc.lastSweeps.slice(-3),
+            activeSweep: ctx.smc.activeSweep ?? null,
+            sweepMetrics: ctx.smc.activeSweepMetrics(),
+            displacement: ctx.smc.lastDisplacement,
+            breakerBlocks: ctx.smc.lastBreakers,
+            inducements: ctx.smc.lastInducements,
+            premiumDiscount: pd,
+            tierReadiness: {
+              currentTier: tier,
+              conditions,
+              readiness: tierResult.readiness,
+            },
+          },
+        ];
+      })
     ),
   };
 }
@@ -420,6 +515,36 @@ const stateServer = http.createServer(async (req, res) => {
         })),
       })
     );
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/config/tier") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ tier: getRuntimeTier() }));
+    return;
+  }
+
+  if (req.method === "POST" && req.url?.startsWith("/api/config/tier")) {
+    const url = new URL(req.url ?? "", "http://localhost");
+    const level = url.searchParams.get("level");
+    const validTiers: AggressionTier[] = [
+      "aggressive",
+      "moderate",
+      "conservative",
+    ];
+    if (!level || !validTiers.includes(level as AggressionTier)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: `Invalid tier. Must be one of: ${validTiers.join(", ")}`,
+        })
+      );
+      return;
+    }
+    setRuntimeTier(level as AggressionTier);
+    logger.info(`[ARES.CONFIG] Aggression tier changed to '${level}'`);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ tier: level }));
     return;
   }
 
@@ -713,6 +838,19 @@ const scanSymbol = async (ctx: SymbolContext) => {
 
   const atr = ctx.indicators.snapshot("15m").atr14;
   ctx.smc.update(candles15m, ctx.structure.lastBreaks, ctx.structure.lastSwings, true, atr);
+
+  const smcSnapshot = buildSmcSnapshot(ctx, effectiveBias);
+  const tier = getRuntimeTier();
+  const tierResult = evaluateTierReadiness(tier, smcSnapshot);
+  if (!tierResult.passed && !isDevMode()) {
+    logger.debug(
+      `[ARES.STRATEGY] Tier '${tier}' gate not passed for ${ctx.symbol}. Unmet: ${tierResult.unmet.join(", ")}`
+    );
+    fsm.setSignalState(SignalState.HTF_BIAS_CONFIRMED);
+    if (ctx.structure.lastBias)
+      fsm.setSignalState(SignalState.STRUCTURE_ALIGNED);
+    return;
+  }
 
   // Check for ACTIVE candle displacement if in HTF supply/demand
   const currentPrice = ctx.market.lastPrice();

@@ -71,6 +71,42 @@ interface AiAnalysisEntry {
   timestamp: number;
 }
 
+type AggressionTier = "aggressive" | "moderate" | "conservative";
+
+interface BreakerBlockData {
+  type: string;
+  top: number;
+  bottom: number;
+  originalObType: string;
+  isMitigated: boolean;
+}
+
+interface InducementData {
+  type: string;
+  level: number;
+  isSwept: boolean;
+}
+
+interface PremiumDiscountData {
+  swingHigh: number;
+  swingLow: number;
+  equilibrium: number;
+  zone: "PREMIUM" | "DISCOUNT" | "EQUILIBRIUM";
+  percentile: number;
+}
+
+interface TierCondition {
+  name: string;
+  met: boolean;
+  required: boolean;
+}
+
+interface TierReadiness {
+  currentTier: AggressionTier;
+  conditions: TierCondition[];
+  readiness: { aggressive: number; moderate: number; conservative: number };
+}
+
 interface SmcSymbolData {
   bias: string;
   swings: Array<{ price: number; type: string; index: number }>;
@@ -81,6 +117,10 @@ interface SmcSymbolData {
   activeSweep: { type: string; reference: number } | null;
   sweepMetrics: { ageBars: number; ageMinutes: number; volumeRatio: number } | null;
   displacement: { type: string; strength: number; pullbackZone?: { entry: number; stop: number } } | null;
+  breakerBlocks?: BreakerBlockData[];
+  inducements?: InducementData[];
+  premiumDiscount?: PremiumDiscountData | null;
+  tierReadiness?: TierReadiness;
 }
 
 /** Show real numeric value without fixed decimal rounding */
@@ -389,6 +429,140 @@ const TradeHistoryList = ({ history }: { history: TradeHistoryItem[] }) => (
   </div>
 );
 
+const TierSelector = ({
+  current,
+  onChange,
+}: {
+  current: AggressionTier;
+  onChange: (t: AggressionTier) => void;
+}) => {
+  const tiers: AggressionTier[] = ["aggressive", "moderate", "conservative"];
+  const activeClasses: Record<AggressionTier, string> = {
+    aggressive:
+      "bg-rose-500/20 text-rose-400 ring-1 ring-rose-500/40 shadow-lg shadow-rose-500/10",
+    moderate:
+      "bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/40 shadow-lg shadow-amber-500/10",
+    conservative:
+      "bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/40 shadow-lg shadow-emerald-500/10",
+  };
+
+  const handleClick = async (tier: AggressionTier) => {
+    const apiHost = import.meta.env.VITE_ARES_API_URL ?? "http://localhost:3001";
+    try {
+      const res = await fetch(`${apiHost}/api/config/tier?level=${tier}`, {
+        method: "POST",
+      });
+      if (res.ok) onChange(tier);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-1">
+      {tiers.map((t) => (
+        <button
+          key={t}
+          onClick={() => handleClick(t)}
+          className={`px-3 py-1 rounded text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+            t === current
+              ? activeClasses[t]
+              : "bg-white/5 text-slate-600 hover:text-slate-400"
+          }`}
+        >
+          {t}
+        </button>
+      ))}
+    </div>
+  );
+};
+
+const ReadinessChecklist = ({
+  conditions,
+}: {
+  conditions: TierCondition[];
+  tier: AggressionTier;
+}) => (
+  <div className="grid grid-cols-3 gap-x-4 gap-y-1 text-[10px]">
+    {conditions.map((c) => (
+      <div key={c.name} className="flex items-center gap-1.5">
+        <span
+          className={`w-1.5 h-1.5 rounded-full ${
+            c.met
+              ? "bg-emerald-500 shadow-[0_0_4px_#10b981]"
+              : c.required
+                ? "bg-rose-500/60"
+                : "bg-slate-700"
+          }`}
+        />
+        <span
+          className={
+            c.met
+              ? "text-slate-300"
+              : c.required
+                ? "text-rose-400/60"
+                : "text-slate-600"
+          }
+        >
+          {c.name}
+        </span>
+      </div>
+    ))}
+  </div>
+);
+
+const ReadinessMeter = ({
+  readiness,
+}: {
+  readiness: {
+    aggressive: number;
+    moderate: number;
+    conservative: number;
+  };
+}) => {
+  const tiers: { name: string; value: number }[] = [
+    { name: "AGG", value: readiness.aggressive },
+    { name: "MOD", value: readiness.moderate },
+    { name: "CON", value: readiness.conservative },
+  ];
+
+  const barColor = (pct: number) =>
+    pct >= 100
+      ? "bg-emerald-500"
+      : pct >= 70
+        ? "bg-emerald-500/70"
+        : pct >= 30
+          ? "bg-amber-500/70"
+          : "bg-rose-500/70";
+
+  return (
+    <div className="flex flex-col gap-1">
+      {tiers.map((t) => (
+        <div key={t.name} className="flex items-center gap-2">
+          <span className="text-[9px] font-bold text-slate-500 w-6">
+            {t.name}
+          </span>
+          <div className="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
+            <motion.div
+              className={`h-full rounded-full ${barColor(t.value)}`}
+              initial={{ width: 0 }}
+              animate={{ width: `${Math.min(t.value, 100)}%` }}
+              transition={{ duration: 0.5 }}
+            />
+          </div>
+          <span
+            className={`text-[9px] font-mono w-8 text-right ${
+              t.value >= 100 ? "text-emerald-400 font-bold" : "text-slate-500"
+            }`}
+          >
+            {t.value >= 100 ? "RDY" : `${t.value}%`}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const SmcPanel = ({ smcData }: { smcData: Record<string, SmcSymbolData> }) => {
   const symbols = Object.keys(smcData);
   if (symbols.length === 0) return null;
@@ -407,11 +581,24 @@ const SmcPanel = ({ smcData }: { smcData: Record<string, SmcSymbolData> }) => {
           const biasColor = d.bias === 'BULLISH' ? 'text-emerald-400' : d.bias === 'BEARISH' ? 'text-rose-400' : 'text-slate-500';
           return (
             <div key={symbol} className="px-6 py-4">
-              <div className="flex items-center gap-3 mb-3">
+              <div className="flex items-center gap-3 mb-3 flex-wrap">
                 <span className="text-sm font-black">{symbol}</span>
                 <span className={`text-[10px] px-2 py-0.5 rounded font-black uppercase ${biasColor} ${d.bias === 'BULLISH' ? 'bg-emerald-500/10' : d.bias === 'BEARISH' ? 'bg-rose-500/10' : 'bg-slate-500/10'}`}>
                   {d.bias}
                 </span>
+                {d.premiumDiscount && (
+                  <span
+                    className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                      d.premiumDiscount.zone === "DISCOUNT"
+                        ? "bg-emerald-500/10 text-emerald-400"
+                        : d.premiumDiscount.zone === "PREMIUM"
+                          ? "bg-rose-500/10 text-rose-400"
+                          : "bg-slate-500/10 text-slate-400"
+                    }`}
+                  >
+                    {d.premiumDiscount.zone} {d.premiumDiscount.percentile}%
+                  </span>
+                )}
                 {d.activeSweep && (
                   <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${d.activeSweep.type === 'BULL_TRAP' ? 'bg-rose-500/20 text-rose-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
                     {d.activeSweep.type}
@@ -424,7 +611,7 @@ const SmcPanel = ({ smcData }: { smcData: Record<string, SmcSymbolData> }) => {
                 )}
               </div>
 
-              <div className="grid grid-cols-3 gap-3 text-[10px]">
+              <div className="grid grid-cols-5 gap-3 text-[10px]">
                 {/* FVGs */}
                 <div>
                   <span className="text-slate-500 font-bold uppercase block mb-1">FVGs</span>
@@ -465,7 +652,67 @@ const SmcPanel = ({ smcData }: { smcData: Record<string, SmcSymbolData> }) => {
                     </div>
                   )}
                 </div>
+
+                {/* Breaker Blocks */}
+                <div>
+                  <span className="text-slate-500 font-bold uppercase block mb-1">Breakers</span>
+                  {!d.breakerBlocks || d.breakerBlocks.length === 0 ? (
+                    <span className="text-slate-600">None</span>
+                  ) : (
+                    d.breakerBlocks.map((b, i) => (
+                      <div
+                        key={i}
+                        className={`flex items-center gap-1 ${
+                          b.type === "BULLISH"
+                            ? "text-emerald-500/80"
+                            : "text-rose-500/80"
+                        }`}
+                      >
+                        <span className="font-mono">
+                          {b.bottom.toFixed(2)}-{b.top.toFixed(2)}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Inducements */}
+                <div>
+                  <span className="text-slate-500 font-bold uppercase block mb-1">Inducement</span>
+                  {!d.inducements || d.inducements.length === 0 ? (
+                    <span className="text-slate-600">None</span>
+                  ) : (
+                    d.inducements.map((ind, i) => (
+                      <div
+                        key={i}
+                        className={`${
+                          ind.isSwept ? "text-amber-400" : "text-slate-500"
+                        }`}
+                      >
+                        <span className="font-mono">
+                          {ind.type.replace("_INDUCEMENT", "")} @
+                          {ind.level.toFixed(2)}
+                        </span>
+                        {ind.isSwept && (
+                          <span className="ml-1 text-[9px] text-amber-500">
+                            SWEPT
+                          </span>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
+
+              {d.tierReadiness && (
+                <div className="mt-3 pt-3 border-t border-white/5 flex flex-col gap-2">
+                  <ReadinessChecklist
+                    conditions={d.tierReadiness.conditions}
+                    tier={d.tierReadiness.currentTier}
+                  />
+                  <ReadinessMeter readiness={d.tierReadiness.readiness} />
+                </div>
+              )}
 
               {/* Displacement pullback zone */}
               {d.displacement?.pullbackZone && (
@@ -525,7 +772,18 @@ function App() {
   });
 
   const [error, setError] = useState<string | null>(null);
+  const [currentTier, setCurrentTier] = useState<AggressionTier>("moderate");
   const cancelledRef = useRef(false);
+
+  useEffect(() => {
+    const apiHost = import.meta.env.VITE_ARES_API_URL ?? "http://localhost:3001";
+    fetch(`${apiHost}/api/config/tier`)
+      .then((r) => r.json())
+      .then((data: { tier?: AggressionTier }) => {
+        if (data.tier) setCurrentTier(data.tier);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     cancelledRef.current = false;
@@ -669,6 +927,7 @@ function App() {
         </div>
 
         <div className="flex items-center gap-6">
+          <TierSelector current={currentTier} onChange={setCurrentTier} />
           <div className="flex items-center gap-2 px-4 py-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/5 group">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_10px_#10b981]" />
             <span className="text-[10px] font-black text-emerald-500 tracking-wider">SYSTEM.{snapshot.system}</span>

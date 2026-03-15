@@ -1423,12 +1423,7 @@ export const runStrategy = async (
 
   return {
     setup: scored,
-    tierReadiness: tierReadiness ?? evaluateTierReadiness(tier, smcSnapshot ?? {
-      htfBiasAligned: false, inObZone: false, inFvgZone: false,
-      sweepDetected: false, displacementDetected: false, bosConfirmed: false,
-      breakerConfluence: false, inducementDetected: false,
-      premiumDiscountAligned: false, premiumDiscount: null,
-    }),
+    tierReadiness: tierReadiness ?? evaluateTierReadiness(tier, smcSnapshot ?? EMPTY_SNAPSHOT),
   };
 };
 ```

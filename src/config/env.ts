@@ -83,6 +83,10 @@ const EnvSchema = z.object({
       z.coerce.boolean().optional()
     )
     .default(false),
+  /** SMC aggressiveness tier: aggressive (more trades, less confirmation), moderate (balanced), conservative (full SMC sequence required). */
+  SMC_AGGRESSION: z
+    .enum(["aggressive", "moderate", "conservative"])
+    .default("moderate"),
 });
 
 export const env = EnvSchema.parse(process.env);

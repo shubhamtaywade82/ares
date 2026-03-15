@@ -1,9 +1,11 @@
 import { SetupSignal } from "./types.js";
 import { IndicatorSnapshot } from "../indicators/types.js";
+import { AggressionTier, TIER_SCORE_THRESHOLDS } from "./tier.filter.js";
 
 export const scoreSetup = (
   setup: SetupSignal,
-  htfIndicators: IndicatorSnapshot
+  htfIndicators: IndicatorSnapshot,
+  tier: AggressionTier = "moderate"
 ): SetupSignal | null => {
   let score = setup.score;
   const reasons = [...setup.reasons];
@@ -24,7 +26,8 @@ export const scoreSetup = (
     reasons.push("ATR healthy");
   }
 
-  if (score < 5) return null;
+  const threshold = TIER_SCORE_THRESHOLDS[tier];
+  if (score < threshold) return null;
 
   return { ...setup, score, reasons };
 }
