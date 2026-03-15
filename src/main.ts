@@ -798,12 +798,30 @@ const bootstrap = async () => {
   }
 
   // Start broadcast interval ONLY after bootstrap is complete
+  let lastReportTime = 0;
   setInterval(() => {
     getStatePayload()
-      .then((data) => {
+      .then((data: any) => {
         const payload = JSON.stringify(data);
         for (const client of wss.clients) {
           if (client.readyState === 1) client.send(payload);
+        }
+
+        const now = Date.now();
+        if (now - lastReportTime >= 30000) {
+          const realized = data.portfolio.totalPnl;
+          const unrealized = data.activePositions.reduce((sum: number, p: any) => sum + p.pnl, 0);
+          const daily = data.portfolio.dailyPnl;
+          const total = realized + unrealized;
+          
+          const colorRealized = realized >= 0 ? "\x1b[32m" : "\x1b[31m";
+          const colorUnrealized = unrealized >= 0 ? "\x1b[32m" : "\x1b[31m";
+          const colorDaily = daily >= 0 ? "\x1b[32m" : "\x1b[31m";
+          const colorTotal = total >= 0 ? "\x1b[32m" : "\x1b[31m";
+          const reset = "\x1b[0m";
+
+          logger.info(`[ARES.REPORT] PnL Snapshot | Realized: ${colorRealized}₹${realized.toFixed(2)}${reset} | Unrealized: ${colorUnrealized}₹${unrealized.toFixed(2)}${reset} | Daily: ${colorDaily}₹${daily.toFixed(2)}${reset} | Total: ${colorTotal}₹${total.toFixed(2)}${reset}`);
+          lastReportTime = now;
         }
       })
       .catch((err) => logger.error(err, "[ARES.API] WebSocket state broadcast failed"));

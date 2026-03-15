@@ -906,6 +906,17 @@ function App() {
   const totalPnl = portfolio.totalPnl;
   const dailyPnl = portfolio.dailyPnl;
 
+  type NavTab = "dashboard" | "engine" | "risk" | "scanner" | "reports";
+  const [activeTab, setActiveTab] = useState<NavTab>("dashboard");
+
+  const navTabs: { id: NavTab; label: string }[] = [
+    { id: "dashboard", label: "Dashboard" },
+    { id: "engine", label: "Engine" },
+    { id: "risk", label: "Risk" },
+    { id: "scanner", label: "Scanner" },
+    { id: "reports", label: "Reports" },
+  ];
+
   return (
     <div className="dashboard-root min-h-screen text-slate-100 flex flex-col">
       <header className="px-8 py-4 flex justify-between items-center backdrop-blur-3xl sticky top-0 z-50 border-b border-white/5 bg-black/40">
@@ -915,13 +926,21 @@ function App() {
             <span className="text-[8px] uppercase tracking-[0.4em] font-black text-slate-500">Trader Terminal</span>
           </div>
 
-          <nav className="hidden lg:flex items-center gap-6">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-500 ring-1 ring-blue-500/20">
-              <Zap size={14} />
-              <span className="text-[10px] font-black uppercase tracking-widest">Dashboard</span>
-            </div>
-            {['Engine', 'Risk', 'Scanner', 'Reports'].map(item => (
-              <span key={item} className="text-[10px] font-bold uppercase tracking-widest text-slate-500 hover:text-white cursor-pointer transition-colors px-2">{item}</span>
+          <nav className="hidden lg:flex items-center gap-2">
+            {navTabs.map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setActiveTab(id)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors ${
+                  activeTab === id
+                    ? "bg-blue-500/10 text-blue-500 ring-1 ring-blue-500/20"
+                    : "text-slate-500 hover:text-white hover:bg-white/5"
+                }`}
+              >
+                {id === "dashboard" && <Zap size={14} />}
+                {label}
+              </button>
             ))}
           </nav>
         </div>
@@ -952,6 +971,121 @@ function App() {
           </div>
         )}
 
+        {activeTab === "engine" && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <MetricCard title="Equity Balance" value={`₹${formatRaw(totalBalance)}`} icon={Wallet} color="blue" />
+              <MetricCard title="Active Signals" value={String(activePositions.length)} subValue="ScanActive" icon={Activity} color="purple" trend="up" />
+            </div>
+            <CurrentTrendStrip snapshot={snapshot} />
+            <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <StateCard
+                title="Regime"
+                activeState={snapshot.regime}
+                allStates={["TRENDING_BULL", "TRENDING_BEAR", "RANGING", "VOLATILE_EXPANSION", "VOLATILE_COMPRESSION", "UNKNOWN"]}
+                formatLabel={regimeLabel}
+                icon={TrendingDown}
+                color="purple"
+              />
+              <StateCard
+                title="Structure"
+                activeState={snapshot.structure}
+                allStates={["BULLISH_STRUCTURE", "BEARISH_STRUCTURE", "BOS_CONFIRMED", "CHOCH_CONFIRMED", "LIQUIDITY_SWEEP", "PULLBACK_PHASE", "NONE"]}
+                formatLabel={structureLabel}
+                icon={Layers}
+                color="indigo"
+              />
+              <StateCard
+                title="Signal"
+                activeState={snapshot.signal}
+                allStates={["IDLE", "HTF_BIAS_CONFIRMED", "STRUCTURE_ALIGNED", "READY_TO_EXECUTE", "ORDER_FILLED", "INVALIDATED"]}
+                formatLabel={signalLabel}
+                icon={Zap}
+                color="amber"
+              />
+            </section>
+            <div className="glass p-6 border-l-4 border-l-blue-500/50">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Engine status</h3>
+              <p className="text-[10px] text-slate-500">System: {snapshot.system} · Regime: {regimeLabel(snapshot.regime)} · Structure: {structureLabel(snapshot.structure)} · Signal: {signalLabel(snapshot.signal)}</p>
+            </div>
+          </>
+        )}
+
+        {activeTab === "risk" && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <MetricCard title="Equity Balance" value={`₹${formatRaw(totalBalance)}`} icon={Wallet} color="blue" />
+              <MetricCard title="Total PnL" value={`₹${formatRaw(totalPnl)}`} subValue={`${formatRaw(portfolio.winRate)} WR`} icon={BarChart3} color="emerald" trend="up" />
+              <MetricCard title="Daily PnL" value={`₹${formatRaw(dailyPnl)}`} icon={TrendingUp} color="emerald" trend="up" />
+              <MetricCard title="Risk state" value={snapshot.risk} icon={ShieldCheck} color="rose" />
+            </div>
+            <div className="glass p-6 border-l-4 border-l-rose-500/50 max-w-2xl">
+              <div className="flex items-center gap-2 mb-4">
+                <ShieldCheck size={18} className="text-rose-500" />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Security & Risk</h3>
+              </div>
+              <div className="flex flex-col gap-3">
+                <div className="flex justify-between items-center p-2 rounded bg-rose-500/5 border border-rose-500/10">
+                  <span className="text-[10px] font-bold text-rose-500/80 uppercase">Daily Drawdown Limit</span>
+                  <span className="text-[10px] font-black text-rose-500">2.0%</span>
+                </div>
+                <div className="flex justify-between items-center p-2 rounded bg-emerald-500/5 border border-emerald-500/10">
+                  <span className="text-[10px] font-bold text-emerald-500/80 uppercase">Max Consec Losses</span>
+                  <span className="text-[10px] font-black text-emerald-500">3/5</span>
+                </div>
+                <div className="flex justify-between items-center p-2 rounded bg-blue-500/5 border border-blue-500/10">
+                  <span className="text-[10px] font-bold text-blue-500/80 uppercase">API Latency</span>
+                  <span className="text-[10px] font-black text-blue-500">24ms</span>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {activeTab === "scanner" && (
+          <>
+            <CurrentTrendStrip snapshot={snapshot} />
+            {marketTickers.length > 0 && (
+              <section className="glass overflow-hidden">
+                <div className="px-6 py-4 border-b border-white/5 flex items-center gap-2 bg-white/[0.02]">
+                  <Activity size={16} className="text-slate-400" />
+                  <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">Futures Watchlist</h2>
+                  <span className="text-[10px] text-slate-500">Live from Delta Exchange</span>
+                </div>
+                <div className="p-4 flex flex-wrap gap-4">
+                  {marketTickers.map((t) => (
+                    <div
+                      key={t.symbol}
+                      className="px-4 py-2 rounded-lg bg-white/5 border border-white/10 flex items-baseline gap-3 min-w-[140px]"
+                    >
+                      <span className="text-xs font-black text-slate-300">{t.symbol}</span>
+                      <FlashValue value={t.lastPrice}>
+                        <span className="font-mono text-sm font-bold tabular-nums text-white">
+                          {t.lastPrice > 0 ? `$${formatRaw(t.lastPrice)}` : <span className="text-slate-500 font-normal">—</span>}
+                        </span>
+                      </FlashValue>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+            <SmcPanel smcData={smcData} />
+          </>
+        )}
+
+        {activeTab === "reports" && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <MetricCard title="Equity Balance" value={`₹${formatRaw(totalBalance)}`} icon={Wallet} color="blue" />
+              <MetricCard title="Total PnL" value={`₹${formatRaw(totalPnl)}`} subValue={`${formatRaw(portfolio.winRate)} WR`} icon={BarChart3} color="emerald" trend="up" />
+              <MetricCard title="Daily PnL" value={`₹${formatRaw(dailyPnl)}`} icon={TrendingUp} color="emerald" trend="up" />
+            </div>
+            <TradeHistoryList history={history} />
+          </>
+        )}
+
+        {activeTab === "dashboard" && (
+          <>
         {/* Portfolio Summary */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <MetricCard title="Equity Balance" value={`₹${formatRaw(totalBalance)}`} icon={Wallet} color="blue" />
@@ -1116,6 +1250,8 @@ function App() {
             </div>
           </div>
         </div>
+          </>
+        )}
       </main>
 
       <footer className="px-8 py-6 border-t border-white/5 bg-black/20 text-slate-600">
