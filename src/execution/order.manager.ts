@@ -8,6 +8,9 @@ import { KillReason } from "../risk/kill.reasons.js";
 import { PaperExecutor } from "./paper.executor.js";
 import { BracketBuilder } from "./bracket.builder.js";
 import { ActivePosition } from "./trade.types.js";
+import type { ExitReason } from "./trade.types.js";
+
+export type OnPaperBracketClosed = (pos: ActivePosition, exitReason: ExitReason, exitPrice: number) => void;
 
 export class OrderManager {
   private pendingPaperBrackets = new Map<
@@ -30,7 +33,8 @@ export class OrderManager {
     private mode: "paper" | "live" | "backtest" | "dev" | "test_flow",
     private paper?: PaperExecutor,
     private bracketBuilder?: BracketBuilder,
-    private activePositions?: Map<string, ActivePosition>
+    private activePositions?: Map<string, ActivePosition>,
+    private onPaperBracketClosed?: OnPaperBracketClosed
   ) {}
 
   private isPostOnlyRejection(error: unknown): boolean {
@@ -195,12 +199,25 @@ export class OrderManager {
   onPaperOrderUpdate(orderId: string, status: string) {
     if ((this.mode !== "paper" && this.mode !== "dev" && this.mode !== "test_flow") || status !== "closed") return;
 
-    // If this is an SL/TP fill, remove the position from activePositions so dashboard updates
+    // If this is an SL/TP fill, record trade, then remove the position so dashboard updates
     if (this.activePositions) {
       for (const [symbol, pos] of this.activePositions) {
-        if (pos.slOrderId === orderId || pos.tp1OrderId === orderId || pos.tp2OrderId === orderId) {
+        if (pos.slOrderId === orderId) {
+          this.onPaperBracketClosed?.(pos, "SL", pos.slPrice);
           this.activePositions.delete(symbol);
-          logger.info(`[ARES.PAPER] Position ${symbol} closed (order ${orderId}); removed from active positions`);
+          logger.info(`[ARES.PAPER] Position ${symbol} closed (SL); removed from active positions`);
+          return;
+        }
+        if (pos.tp1OrderId === orderId) {
+          this.onPaperBracketClosed?.(pos, "TP1", pos.tp1Price);
+          this.activePositions.delete(symbol);
+          logger.info(`[ARES.PAPER] Position ${symbol} closed (TP1); removed from active positions`);
+          return;
+        }
+        if (pos.tp2OrderId === orderId) {
+          this.onPaperBracketClosed?.(pos, "TP2", pos.tp2Price);
+          this.activePositions.delete(symbol);
+          logger.info(`[ARES.PAPER] Position ${symbol} closed (TP2); removed from active positions`);
           return;
         }
       }

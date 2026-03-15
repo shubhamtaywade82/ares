@@ -39,6 +39,7 @@ src/
 
 ## Key design decisions
 
+- **No Redis** — Open positions, PnL, and trade history use **in-memory state** (e.g. `activePositions`, `PositionStore`, `PnlTracker`). Trade history is persisted to `logs/trades.ndjson` for durability and dashboard display after restart. Live PnL is derived from these in-memory structures and the journal.
 - **Post-only orders only** — never taker orders (reduces slippage + fees)
 - **Kill switch is non-negotiable** — `risk/` can halt all trading; never bypass it
 - Indicators in `src/indicators/` are **pure functions** — no I/O, no state

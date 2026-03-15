@@ -29,7 +29,7 @@ import { createAIClientFromEnv } from "./ai/ai.client.js";
 import { aiVeto } from "./ai/ai.veto.js";
 import { AIVetoInput } from "./ai/ai.types.js";
 import { OrderStore } from "./state/order.store.js";
-import { OrderManager } from "./execution/order.manager.js";
+import { OrderManager, OnPaperBracketClosed } from "./execution/order.manager.js";
 import { RiskContext } from "./risk/types.js";
 import { PaperExecutor } from "./execution/paper.executor.js";
 import { PositionStore } from "./state/position.store.js";
@@ -47,7 +47,8 @@ import {
 import { savePaperState, loadPaperState } from "./state/persistence.js";
 import { BracketBuilder } from "./execution/bracket.builder.js";
 import { TradeJournal } from "./execution/trade.journal.js";
-import { ActivePosition, ExitReason } from "./execution/trade.types.js";
+import { ActivePosition, ExitReason, TradeRecord } from "./execution/trade.types.js";
+import { calculatePnl, calculateRMultiple } from "./execution/pnl.js";
 import { ExitManager } from "./execution/exit.manager.js";
 import { calculatePositionSize } from "./risk/position.sizer.js";
 
@@ -109,7 +110,44 @@ const activePositions = new Map<string, ActivePosition>();
 const entryLocks = new Set<string>();
 const bracketBuilder = new BracketBuilder(rest);
 const tradeJournal = new TradeJournal();
-const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE, paper, bracketBuilder, activePositions);
+const onPaperBracketClosed: OnPaperBracketClosed = (pos, exitReason, exitPrice) => {
+  const contractValue = Number(symbolContexts.get(pos.symbol)?.cachedProduct?.contract_value ?? 1);
+  const pnlUsd = calculatePnl(pos.side, pos.entryPrice, exitPrice, pos.filledQty, contractValue);
+  const riskUsdt = Math.abs(pos.entryPrice - pos.slPrice) * pos.entryQty * contractValue;
+  const record: TradeRecord = {
+    id: uuid(),
+    symbol: pos.symbol,
+    side: pos.side,
+    entryPrice: pos.entryPrice,
+    entryQty: pos.entryQty,
+    entryTime: pos.entryTime,
+    tp1Price: pos.tp1Price,
+    tp1FilledPrice: pos.tp1FillPrice,
+    tp1FilledQty: pos.tp1FillQty,
+    tp1FilledTime: pos.tp1FilledTime,
+    tp2Price: pos.tp2Price,
+    tp2FilledPrice: pos.tp2FillPrice,
+    tp2FilledQty: pos.tp2FillQty,
+    tp2FilledTime: pos.tp2FilledTime,
+    slPrice: pos.slPrice,
+    slFilledPrice: null,
+    slFilledQty: null,
+    slFilledTime: null,
+    exitReason,
+    realizedPnl: pnlUsd,
+    rMultiple: calculateRMultiple(pnlUsd, riskUsdt),
+    closedTime: Date.now(),
+    signal: pos.signal,
+    entryOrderId: pos.entryOrderId,
+    slOrderId: pos.slOrderId,
+    tp1OrderId: pos.tp1OrderId,
+    tp2OrderId: pos.tp2OrderId,
+  };
+  tradeJournal.write(record);
+  pnl.record(pnlUsd * RISK_CONFIG.USDINR);
+};
+
+const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE, paper, bracketBuilder, activePositions, onPaperBracketClosed);
 const exitManager = new ExitManager(rest, bracketBuilder, tradeJournal, activePositions, {
   isDailyLossBreached: () => {
     const equity = cachedBalance ?? env.PAPER_BALANCE ?? 0;
@@ -272,6 +310,109 @@ const buildSmcSnapshot = (
   };
 };
 
+/** Build list of open positions for dashboard: activePositions + live WS positions (live) or PositionStore (paper) so UI always shows current state. */
+function getDisplayPositions(): Array<ActivePosition & { markPrice: number; pnl: number; pnlPercent: number }> {
+  const bySymbol = new Map<string, ActivePosition>();
+
+  for (const pos of activePositions.values()) bySymbol.set(pos.symbol, pos);
+  const activeCountBefore = bySymbol.size;
+
+  if (env.TRADING_MODE === "live") {
+    for (const [symbol, data] of livePositions) {
+      const size = Math.abs(Number(data?.size ?? 0));
+      if (size <= 0 || bySymbol.has(symbol)) continue;
+      const rawSize = Number(data.size ?? 0);
+      bySymbol.set(symbol, {
+        entryOrderId: "ws",
+        symbol,
+        side: rawSize > 0 ? "buy" : "sell",
+        entryPrice: Number(data.entry_price ?? 0),
+        entryQty: size,
+        filledQty: size,
+        entryTime: Date.now(),
+        stage: "OPEN_FULL",
+        slPrice: 0,
+        tp1Price: 0,
+        tp2Price: 0,
+        slOrderId: null,
+        tp1OrderId: null,
+        tp2OrderId: null,
+        beSlOrderId: null,
+        tp1FillPrice: null,
+        tp1FillQty: null,
+        tp1FilledTime: null,
+        tp2FillPrice: null,
+        tp2FillQty: null,
+        tp2FilledTime: null,
+        slFillPrice: null,
+        slFillQty: null,
+        slFilledTime: null,
+        signal: { htfBias: "UNKNOWN", smcScore: 0, rr: 0, reason: "ws" },
+      });
+    }
+  }
+
+  const liveCount = bySymbol.size - activeCountBefore;
+
+  if (isSimulatedMode()) {
+    const paperPositions = positions.all();
+    for (const pos of paperPositions) {
+      const symbol = (pos.productSymbol ?? "").toUpperCase();
+      if (!symbol || bySymbol.has(symbol)) continue;
+      bySymbol.set(symbol, {
+        entryOrderId: "paper",
+        symbol,
+        side: pos.side === "LONG" ? "buy" : "sell",
+        entryPrice: pos.entryPrice,
+        entryQty: pos.qty,
+        filledQty: pos.qty,
+        entryTime: Date.now(),
+        stage: "OPEN_FULL",
+        slPrice: pos.stopPrice ?? 0,
+        tp1Price: pos.targetPrice ?? 0,
+        tp2Price: pos.targetPrice ?? 0,
+        slOrderId: null,
+        tp1OrderId: null,
+        tp2OrderId: null,
+        beSlOrderId: null,
+        tp1FillPrice: null,
+        tp1FillQty: null,
+        tp1FilledTime: null,
+        tp2FillPrice: null,
+        tp2FillQty: null,
+        tp2FilledTime: null,
+        slFillPrice: null,
+        slFillQty: null,
+        slFilledTime: null,
+        signal: { htfBias: "UNKNOWN", smcScore: 0, rr: 0, reason: "paper" },
+      });
+    }
+    if (paperPositions.length > 0 && bySymbol.size === activeCountBefore + liveCount) {
+       logger.debug(`[ARES.API] getDisplayPositions: Found ${paperPositions.length} paper positions in store, but they were already in bySymbol or had invalid symbols.`);
+    }
+  }
+
+  const result = Array.from(bySymbol.values()).map((pos) => {
+    const markPrice = watchlistLtps.get(pos.symbol) ?? pos.entryPrice;
+    const contractValue = Number(
+      symbolContexts.get(pos.symbol)?.cachedProduct?.contract_value ?? 1
+    );
+    const leverage = resolveMaxLeverage(pos.symbol);
+    const direction = pos.side === "buy" ? 1 : -1;
+    const pnlUsd = direction * (markPrice - pos.entryPrice) * pos.filledQty * contractValue;
+    const positionPnl = pnlUsd * RISK_CONFIG.USDINR;
+    const marginINR = pos.entryPrice * pos.filledQty * contractValue * RISK_CONFIG.USDINR / leverage;
+    const pnlPercent = marginINR > 0 ? (positionPnl / marginINR) * 100 : 0;
+    return { ...pos, markPrice, pnl: positionPnl, pnlPercent };
+  });
+
+  if (result.length > 0) {
+    logger.debug(`[ARES.API] getDisplayPositions gathering: active=${activeCountBefore}, live=${liveCount}, total=${result.length}`);
+  }
+
+  return result;
+}
+
 const getStatePayload = async (): Promise<object> => {
   const riskCtx = await getRiskContext("BTCUSD");
   const snapshot = fsm.getSnapshot();
@@ -296,20 +437,8 @@ const getStatePayload = async (): Promise<object> => {
       dailyPnl: riskCtx.dailyPnl,
       winRate: tradeJournal.stats.winRate,
     },
-    activePositions: Array.from(activePositions.values()).map((pos) => {
-      const markPrice = watchlistLtps.get(pos.symbol) ?? pos.entryPrice;
-      const contractValue = Number(
-        symbolContexts.get(pos.symbol)?.cachedProduct?.contract_value ?? 1
-      );
-      const leverage = resolveMaxLeverage(pos.symbol);
-      const direction = pos.side === "buy" ? 1 : -1;
-      const pnlUsd = direction * (markPrice - pos.entryPrice) * pos.filledQty * contractValue;
-      const positionPnl = pnlUsd * RISK_CONFIG.USDINR;
-      const marginINR = pos.entryPrice * pos.filledQty * contractValue * RISK_CONFIG.USDINR / leverage;
-      const pnlPercent = marginINR > 0 ? (positionPnl / marginINR) * 100 : 0;
-      return { ...pos, markPrice, pnl: positionPnl, pnlPercent };
-    }),
-    history: tradeJournal.history.slice(-10),
+    activePositions: getDisplayPositions(),
+    history: tradeJournal.history.slice(-50),
     market: { tickers },
     aiAnalysis: aiAnalysisLog.slice(0, 15),
     smcData: Object.fromEntries(
@@ -615,16 +744,6 @@ const bootstrap = async () => {
 
   stateServer.listen(API_PORT, "0.0.0.0", () => {
     logger.info(`[ARES.API] State server listening on 0.0.0.0:${API_PORT}`);
-    setInterval(() => {
-      getStatePayload()
-        .then((data) => {
-          const payload = JSON.stringify(data);
-          for (const client of wss.clients) {
-            if (client.readyState === 1) client.send(payload);
-          }
-        })
-        .catch((err) => logger.error(err, "[ARES.API] WebSocket state broadcast failed"));
-    }, 1000);
   });
 
   // AI Health Check
@@ -677,6 +796,18 @@ const bootstrap = async () => {
 
     await bootstrapMarket(rest, market, symbol);
   }
+
+  // Start broadcast interval ONLY after bootstrap is complete
+  setInterval(() => {
+    getStatePayload()
+      .then((data) => {
+        const payload = JSON.stringify(data);
+        for (const client of wss.clients) {
+          if (client.readyState === 1) client.send(payload);
+        }
+      })
+      .catch((err) => logger.error(err, "[ARES.API] WebSocket state broadcast failed"));
+  }, 1000);
 
   const ws = new DeltaWsClient(
     (msg: any) => {
@@ -797,6 +928,10 @@ const bootstrap = async () => {
           }
         }
       );
+      for (const p of openPositions) {
+        const sym = String(p.product_symbol ?? p.symbol ?? "").toUpperCase();
+        if (sym && Math.abs(Number(p.size ?? 0)) > 0) livePositions.set(sym, p);
+      }
       logger.info(`[ARES.BOOT] Live reconciliation complete: ${openPositions.length} positions, ${openOrders.length} orders`);
     } catch (err) {
       logger.error(err, "[ARES.BOOT] Live reconciliation failed");
@@ -1307,12 +1442,14 @@ const handlePositionUpdate = (msg: any) => {
   if (!symbol) return;
 
   logger.info(`[ARES.WS] Position update: ${symbol} size=${size}`);
-  livePositions.set(symbol, data);
-
-  // If position is flat, clean up activePositions
-  if (size === 0 && activePositions.has(symbol)) {
-    activePositions.delete(symbol);
-    logger.info(`[ARES.WS] Position ${symbol} is flat; removed from active positions`);
+  if (size === 0) {
+    livePositions.delete(symbol);
+    if (activePositions.has(symbol)) {
+      activePositions.delete(symbol);
+      logger.info(`[ARES.WS] Position ${symbol} is flat; removed from active positions`);
+    }
+  } else {
+    livePositions.set(symbol, data);
   }
 }
 
