@@ -25,7 +25,7 @@ const EnvSchema = z.object({
   DELTA_PRODUCT_SYMBOL: optionalString,
   DELTA_PRODUCT_SYMBOLS: optionalString,
   DELTA_PRODUCT_ID: optionalNumber,
-  TRADING_MODE: z.enum(["paper", "live", "backtest"]),
+  TRADING_MODE: z.enum(["paper", "live", "backtest", "dev", "test_flow"]),
   BOOT_CLOSE_ORPHAN_POSITIONS: z
     .preprocess(
       (value) =>
@@ -73,6 +73,32 @@ const EnvSchema = z.object({
       z.coerce.boolean().optional()
     )
     .default(false),
+  /** In paper mode, allow synthetic displacement so entries can fire without real SMC displacement (for pipeline testing). */
+  PAPER_SYNTHETIC_DISPLACEMENT: z
+    .preprocess(
+      (value) =>
+        typeof value === "string" && value.trim() === ""
+          ? undefined
+          : value,
+      z.coerce.boolean().optional()
+    )
+    .default(false),
+  /** SMC aggressiveness tier: aggressive (more trades, less confirmation), moderate (balanced), conservative (full SMC sequence required). */
+  SMC_AGGRESSION: z
+    .enum(["aggressive", "moderate", "conservative"])
+    .default("moderate"),
+  /** State/API server port (dashboard WebSocket + HTTP). Default 3001. */
+  ARES_API_PORT: optionalNumber.default(3001),
 });
 
 export const env = EnvSchema.parse(process.env);
+
+/** True when running in dev mode: relaxed gates to exercise full pipeline (entries, positions, PnL, exits). */
+export const isDevMode = (): boolean => env.TRADING_MODE === "dev" || env.TRADING_MODE === "test_flow";
+
+/** True when running in test_flow mode: forces immediate entry and exit on completion. */
+export const isTestFlowMode = (): boolean => env.TRADING_MODE === "test_flow";
+
+/** True when execution is simulated (paper or dev or test_flow). Paper/dev use PaperExecutor and persist state. */
+export const isSimulatedMode = (): boolean =>
+  env.TRADING_MODE === "paper" || env.TRADING_MODE === "dev" || env.TRADING_MODE === "test_flow";

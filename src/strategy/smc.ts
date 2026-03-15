@@ -35,6 +35,24 @@ export interface LiquiditySweep {
   detectedBarIndex: number;
 }
 
+export interface BreakerBlock {
+  type: "BULLISH" | "BEARISH";
+  top: number;
+  bottom: number;
+  originalObType: "BULLISH" | "BEARISH";
+  timestamp: number;
+  barIndex: number;
+  isMitigated: boolean;
+}
+
+export interface Inducement {
+  type: "BULL_INDUCEMENT" | "BEAR_INDUCEMENT";
+  level: number;
+  timestamp: number;
+  barIndex: number;
+  isSwept: boolean;
+}
+
 export interface NearestZone {
   top: number;
   bottom: number;
@@ -53,6 +71,11 @@ const SMC_CONFIG = {
   maxSweeps: 10,
   sweepMaxAgeBars: 8,
   nearestZoneMaxAgeBars: 50,
+  maxBreakers: 10,
+  breakerMaxAgeBars: 30,
+  maxInducements: 10,
+  inducementMaxAgeBars: 20,
+  inducementLookbackBars: 5,
 } as const;
 
 /**
@@ -62,6 +85,8 @@ export class SmcAnalyzer {
   private fvgs: FVG[] = [];
   private obs: OrderBlock[] = [];
   private sweeps: LiquiditySweep[] = [];
+  private breakers: BreakerBlock[] = [];
+  private inducements: Inducement[] = [];
   private displacementDetector = new DisplacementDetector();
   private lastProcessedTimestamp = 0;
   private resolutionMs: number;
@@ -90,6 +115,8 @@ export class SmcAnalyzer {
     this.detectOBs(normalized, breaks);
     this.detectLiquiditySweeps(normalized, swings);
     this.checkMitigation(normalized);
+    this.detectBreakerBlocks(normalized);
+    this.detectInducements(normalized, swings);
     this.expireSweeps();
 
     // Displacement detection (requires ATR + SMC context)
@@ -122,6 +149,33 @@ export class SmcAnalyzer {
   /** Most recent displacement event, or null if none detected. */
   get lastDisplacement(): DisplacementEvent | null {
     return this.displacementDetector.lastEvent();
+  }
+
+  get lastBreakers(): BreakerBlock[] {
+    return this.breakers.filter((b) => !b.isMitigated).slice(-5);
+  }
+
+  get lastInducements(): Inducement[] {
+    return this.inducements.slice(-5);
+  }
+
+  get activeInducement(): Inducement | undefined {
+    return this.inducements.filter((i) => !i.isSwept).at(-1);
+  }
+
+  nearestBreaker(
+    price: number,
+    type: BreakerBlock["type"],
+    maxAgeBars = SMC_CONFIG.nearestZoneMaxAgeBars
+  ): NearestZone | null {
+    const currentBarIndex = this.barIndex(this.lastProcessedTimestamp);
+    const candidates = this.breakers.filter(
+      (b) =>
+        !b.isMitigated &&
+        b.type === type &&
+        currentBarIndex - b.barIndex <= Math.max(0, maxAgeBars)
+    );
+    return this.pickNearestZone(candidates, price);
   }
 
   activeSweepMetrics(): { ageBars: number; ageMinutes: number; volumeRatio: number } | null {
@@ -298,6 +352,132 @@ export class SmcAnalyzer {
       if (ob.isMitigated) continue;
       if (ob.type === "BULLISH" && last.low <= ob.bottom) ob.isMitigated = true;
       if (ob.type === "BEARISH" && last.high >= ob.top) ob.isMitigated = true;
+    }
+  }
+
+  private detectBreakerBlocks(candles: readonly DeltaCandle[]) {
+    const last = candles.at(-1);
+    if (!last) return;
+
+    for (const ob of this.obs) {
+      if (!ob.isMitigated) continue;
+
+      let isBroken = false;
+      let breakerType: BreakerBlock["type"];
+
+      if (ob.type === "BULLISH" && last.close < ob.bottom) {
+        isBroken = true;
+        breakerType = "BEARISH";
+      } else if (ob.type === "BEARISH" && last.close > ob.top) {
+        isBroken = true;
+        breakerType = "BULLISH";
+      } else {
+        continue;
+      }
+
+      const exists = this.breakers.some(
+        (b) => b.timestamp === ob.timestamp && b.originalObType === ob.type
+      );
+      if (exists) continue;
+
+      this.breakers.push({
+        type: breakerType,
+        top: ob.top,
+        bottom: ob.bottom,
+        originalObType: ob.type,
+        timestamp: ob.timestamp,
+        barIndex: ob.barIndex,
+        isMitigated: false,
+      });
+
+      if (this.breakers.length > SMC_CONFIG.maxBreakers) this.breakers.shift();
+    }
+
+    const currentBarIndex = this.barIndex(this.lastProcessedTimestamp);
+    this.breakers = this.breakers.filter(
+      (b) => currentBarIndex - b.barIndex <= SMC_CONFIG.breakerMaxAgeBars
+    );
+
+    for (const b of this.breakers) {
+      if (b.isMitigated) continue;
+      if (b.type === "BULLISH" && last.low <= b.top && last.close >= b.bottom) {
+        b.isMitigated = true;
+      }
+      if (b.type === "BEARISH" && last.high >= b.bottom && last.close <= b.top) {
+        b.isMitigated = true;
+      }
+    }
+  }
+
+  private detectInducements(
+    candles: readonly DeltaCandle[],
+    swings: SwingPoint[]
+  ) {
+    const last = candles.at(-1);
+    if (!last || swings.length < 3) return;
+
+    const currentIndex = candles.length - 1;
+    const highs = swings.filter((s) => s.type === "HIGH");
+    const lows = swings.filter((s) => s.type === "LOW");
+
+    const lastMajorLow = lows.at(-2);
+    const minorLow = lows.at(-1);
+    if (
+      lastMajorLow &&
+      minorLow &&
+      minorLow.price > lastMajorLow.price &&
+      currentIndex - minorLow.index <= SMC_CONFIG.inducementLookbackBars
+    ) {
+      const existing = this.inducements.find(
+        (ind) =>
+          ind.level === minorLow.price && ind.type === "BEAR_INDUCEMENT"
+      );
+      if (!existing) {
+        const isSwept = last.low < minorLow.price;
+        this.inducements.push({
+          type: "BEAR_INDUCEMENT",
+          level: minorLow.price,
+          timestamp: minorLow.timestamp,
+          barIndex: minorLow.index,
+          isSwept,
+        });
+      } else if (!existing.isSwept && last.low < minorLow.price) {
+        existing.isSwept = true;
+      }
+    }
+
+    const lastMajorHigh = highs.at(-2);
+    const minorHigh = highs.at(-1);
+    if (
+      lastMajorHigh &&
+      minorHigh &&
+      minorHigh.price < lastMajorHigh.price &&
+      currentIndex - minorHigh.index <= SMC_CONFIG.inducementLookbackBars
+    ) {
+      const existing = this.inducements.find(
+        (ind) =>
+          ind.level === minorHigh.price && ind.type === "BULL_INDUCEMENT"
+      );
+      if (!existing) {
+        const isSwept = last.high > minorHigh.price;
+        this.inducements.push({
+          type: "BULL_INDUCEMENT",
+          level: minorHigh.price,
+          timestamp: minorHigh.timestamp,
+          barIndex: minorHigh.index,
+          isSwept,
+        });
+      } else if (!existing.isSwept && last.high > minorHigh.price) {
+        existing.isSwept = true;
+      }
+    }
+
+    this.inducements = this.inducements.filter(
+      (ind) =>
+        currentIndex - ind.barIndex <= SMC_CONFIG.inducementMaxAgeBars
+    );
+    if (this.inducements.length > SMC_CONFIG.maxInducements) {
+      this.inducements = this.inducements.slice(-SMC_CONFIG.maxInducements);
     }
   }
 

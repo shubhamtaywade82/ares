@@ -1,9 +1,10 @@
 import { MarketCache } from "../market/market.cache.js";
 import { IndicatorCache } from "../indicators/indicator.cache.js";
 import { Bias, SetupSignal } from "./types.js";
-import { StructureAnalyzer } from "./structure.js";
+import { StructureAnalyzer, PremiumDiscount } from "./structure.js";
 import { LiquiditySweep, SmcAnalyzer, DisplacementEvent } from "./smc.js";
 import { detectPattern } from "./patterns.js";
+import { AggressionTier, TIER_BONUS_POINTS } from "./tier.filter.js";
 
 const SWEEP_PROXIMITY_PCT = 0.015;
 const SWEEP_VOLUME_MULTIPLIER = 1.5;
@@ -24,7 +25,9 @@ export const detectLTFSetup = (
   market: MarketCache,
   indicators: IndicatorCache,
   structure?: StructureAnalyzer,
-  smc?: SmcAnalyzer
+  smc?: SmcAnalyzer,
+  tier: AggressionTier = "moderate",
+  premiumDiscount?: PremiumDiscount | null
 ): SetupSignal | null => {
   if (bias === "NONE") return null;
 
@@ -135,7 +138,51 @@ export const detectLTFSetup = (
     }
   }
 
-  // 4. Fallback: Traditional Pullback Confluence
+  // 5. Breaker Block Confluence
+  if (smc) {
+    const breakerType = bias === "LONG" ? "BULLISH" : "BEARISH";
+    const nearBreaker = smc.nearestBreaker(last.close, breakerType);
+    if (nearBreaker?.isInside) {
+      const pts = TIER_BONUS_POINTS[tier].breaker ?? 0;
+      score += pts;
+      reasons.push(`In ${breakerType} Breaker Block (+${pts})`);
+    }
+  }
+
+  // 6. Inducement Confluence
+  if (smc) {
+    const inducement = smc.activeInducement;
+    if (inducement) {
+      const aligned =
+        (bias === "LONG" &&
+          inducement.type === "BEAR_INDUCEMENT" &&
+          inducement.isSwept) ||
+        (bias === "SHORT" &&
+          inducement.type === "BULL_INDUCEMENT" &&
+          inducement.isSwept);
+      if (aligned) {
+        const pts = TIER_BONUS_POINTS[tier].inducement ?? 0;
+        score += pts;
+        reasons.push(`Inducement swept (+${pts})`);
+      }
+    }
+  }
+
+  // 7. Premium/Discount Zone Confluence
+  if (premiumDiscount && premiumDiscount.zone !== "EQUILIBRIUM") {
+    const aligned =
+      (bias === "LONG" && premiumDiscount.zone === "DISCOUNT") ||
+      (bias === "SHORT" && premiumDiscount.zone === "PREMIUM");
+    if (aligned) {
+      const pts = TIER_BONUS_POINTS[tier].premiumDiscount ?? 0;
+      score += pts;
+      reasons.push(
+        `${premiumDiscount.zone} zone ${premiumDiscount.percentile}% (+${pts})`
+      );
+    }
+  }
+
+  // 8. Fallback: Traditional Pullback Confluence
   if (ind.ema20 !== undefined && ind.vwap !== undefined) {
     const nearValue =
       Math.abs(last.close - ind.ema20) <= ind.atr14 * 0.5 ||

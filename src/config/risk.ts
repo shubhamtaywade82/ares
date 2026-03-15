@@ -6,6 +6,7 @@ export const RISK_CONFIG = {
   maxOpenTradesTotal: 6,
   maxOpenTradesPerSymbol: 2,
   minRR: 1.5,
+  profitTargetPct: 0.10,
   defaultMaxLeverage: 5,
   maxLeverageBySymbol: {
     BTCUSD: 10,

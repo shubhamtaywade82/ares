@@ -71,6 +71,58 @@ interface AiAnalysisEntry {
   timestamp: number;
 }
 
+type AggressionTier = "aggressive" | "moderate" | "conservative";
+
+interface BreakerBlockData {
+  type: string;
+  top: number;
+  bottom: number;
+  originalObType: string;
+  isMitigated: boolean;
+}
+
+interface InducementData {
+  type: string;
+  level: number;
+  isSwept: boolean;
+}
+
+interface PremiumDiscountData {
+  swingHigh: number;
+  swingLow: number;
+  equilibrium: number;
+  zone: "PREMIUM" | "DISCOUNT" | "EQUILIBRIUM";
+  percentile: number;
+}
+
+interface TierCondition {
+  name: string;
+  met: boolean;
+  required: boolean;
+}
+
+interface TierReadiness {
+  currentTier: AggressionTier;
+  conditions: TierCondition[];
+  readiness: { aggressive: number; moderate: number; conservative: number };
+}
+
+interface SmcSymbolData {
+  bias: string;
+  swings: Array<{ price: number; type: string; index: number }>;
+  breaks: Array<{ type: string; price: number; timestamp: number }>;
+  fvgs: Array<{ type: string; top: number; bottom: number; isFilled: boolean }>;
+  orderBlocks: Array<{ type: string; top: number; bottom: number; isMitigated: boolean }>;
+  sweeps: Array<{ type: string; reference: number; timestamp: number }>;
+  activeSweep: { type: string; reference: number } | null;
+  sweepMetrics: { ageBars: number; ageMinutes: number; volumeRatio: number } | null;
+  displacement: { type: string; strength: number; pullbackZone?: { entry: number; stop: number } } | null;
+  breakerBlocks?: BreakerBlockData[];
+  inducements?: InducementData[];
+  premiumDiscount?: PremiumDiscountData | null;
+  tierReadiness?: TierReadiness;
+}
+
 /** Show real numeric value without fixed decimal rounding */
 function formatRaw(n: number): string {
   return Number.isFinite(n) ? String(n) : '—';
@@ -330,7 +382,7 @@ const PositionTable = ({ positions }: { positions: Position[] }) => (
               <td className="px-6 py-4 text-right">
                 <FlashValue value={p.pnl}>
                   <div className={`flex flex-col items-end gap-0.5 ${p.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    <span className="font-black text-sm tabular-nums tracking-tighter">${formatRaw(p.pnl)}</span>
+                    <span className="font-black text-sm tabular-nums tracking-tighter">₹{formatRaw(p.pnl)}</span>
                     <span className="text-[10px] font-bold opacity-70">({formatRaw(p.pnlPercent)}%)</span>
                   </div>
                 </FlashValue>
@@ -361,7 +413,7 @@ const TradeHistoryList = ({ history }: { history: TradeHistoryItem[] }) => (
           </div>
           <div className="flex flex-col items-end gap-1">
             <span className={`text-xs font-black ${t.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-              {t.pnl >= 0 ? '+' : ''}${formatRaw(t.pnl)}
+              {t.pnl >= 0 ? '+' : ''}₹{formatRaw(t.pnl)}
             </span>
             <span className={`text-[10px] px-1.5 py-0.5 rounded font-black ${
               t.status === 'TP' ? 'bg-emerald-500/10 text-emerald-500' :
@@ -377,6 +429,307 @@ const TradeHistoryList = ({ history }: { history: TradeHistoryItem[] }) => (
   </div>
 );
 
+const TierSelector = ({
+  current,
+  onChange,
+}: {
+  current: AggressionTier;
+  onChange: (t: AggressionTier) => void;
+}) => {
+  const tiers: AggressionTier[] = ["aggressive", "moderate", "conservative"];
+  const activeClasses: Record<AggressionTier, string> = {
+    aggressive:
+      "bg-rose-500/20 text-rose-400 ring-1 ring-rose-500/40 shadow-lg shadow-rose-500/10",
+    moderate:
+      "bg-amber-500/20 text-amber-400 ring-1 ring-amber-500/40 shadow-lg shadow-amber-500/10",
+    conservative:
+      "bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/40 shadow-lg shadow-emerald-500/10",
+  };
+
+  const handleClick = async (tier: AggressionTier) => {
+    const apiHost = import.meta.env.VITE_ARES_API_URL ?? "http://localhost:3001";
+    try {
+      const res = await fetch(`${apiHost}/api/config/tier?level=${tier}`, {
+        method: "POST",
+      });
+      if (res.ok) onChange(tier);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-1">
+      {tiers.map((t) => (
+        <button
+          key={t}
+          onClick={() => handleClick(t)}
+          className={`px-3 py-1 rounded text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+            t === current
+              ? activeClasses[t]
+              : "bg-white/5 text-slate-600 hover:text-slate-400"
+          }`}
+        >
+          {t}
+        </button>
+      ))}
+    </div>
+  );
+};
+
+const ReadinessChecklist = ({
+  conditions,
+}: {
+  conditions: TierCondition[];
+  tier: AggressionTier;
+}) => (
+  <div className="grid grid-cols-3 gap-x-4 gap-y-1 text-[10px]">
+    {conditions.map((c) => (
+      <div key={c.name} className="flex items-center gap-1.5">
+        <span
+          className={`w-1.5 h-1.5 rounded-full ${
+            c.met
+              ? "bg-emerald-500 shadow-[0_0_4px_#10b981]"
+              : c.required
+                ? "bg-rose-500/60"
+                : "bg-slate-700"
+          }`}
+        />
+        <span
+          className={
+            c.met
+              ? "text-slate-300"
+              : c.required
+                ? "text-rose-400/60"
+                : "text-slate-600"
+          }
+        >
+          {c.name}
+        </span>
+      </div>
+    ))}
+  </div>
+);
+
+const ReadinessMeter = ({
+  readiness,
+}: {
+  readiness: {
+    aggressive: number;
+    moderate: number;
+    conservative: number;
+  };
+}) => {
+  const tiers: { name: string; value: number }[] = [
+    { name: "AGG", value: readiness.aggressive },
+    { name: "MOD", value: readiness.moderate },
+    { name: "CON", value: readiness.conservative },
+  ];
+
+  const barColor = (pct: number) =>
+    pct >= 100
+      ? "bg-emerald-500"
+      : pct >= 70
+        ? "bg-emerald-500/70"
+        : pct >= 30
+          ? "bg-amber-500/70"
+          : "bg-rose-500/70";
+
+  return (
+    <div className="flex flex-col gap-1">
+      {tiers.map((t) => (
+        <div key={t.name} className="flex items-center gap-2">
+          <span className="text-[9px] font-bold text-slate-500 w-6">
+            {t.name}
+          </span>
+          <div className="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
+            <motion.div
+              className={`h-full rounded-full ${barColor(t.value)}`}
+              initial={{ width: 0 }}
+              animate={{ width: `${Math.min(t.value, 100)}%` }}
+              transition={{ duration: 0.5 }}
+            />
+          </div>
+          <span
+            className={`text-[9px] font-mono w-8 text-right ${
+              t.value >= 100 ? "text-emerald-400 font-bold" : "text-slate-500"
+            }`}
+          >
+            {t.value >= 100 ? "RDY" : `${t.value}%`}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const SmcPanel = ({ smcData }: { smcData: Record<string, SmcSymbolData> }) => {
+  const symbols = Object.keys(smcData);
+  if (symbols.length === 0) return null;
+
+  return (
+    <div className="glass overflow-hidden">
+      <div className="px-6 py-4 border-b border-white/5 flex items-center gap-2 bg-gradient-to-r from-amber-500/10 to-orange-500/10 border-l-4 border-l-amber-500/60">
+        <Layers size={18} className="text-amber-400" />
+        <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">SMC Live</h3>
+        <span className="text-[10px] text-slate-500">Smart Money Concepts</span>
+      </div>
+      <div className="divide-y divide-white/5">
+        {symbols.map((symbol) => {
+          const d = smcData[symbol];
+          if (!d) return null;
+          const biasColor = d.bias === 'BULLISH' ? 'text-emerald-400' : d.bias === 'BEARISH' ? 'text-rose-400' : 'text-slate-500';
+          return (
+            <div key={symbol} className="px-6 py-4">
+              <div className="flex items-center gap-3 mb-3 flex-wrap">
+                <span className="text-sm font-black">{symbol}</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded font-black uppercase ${biasColor} ${d.bias === 'BULLISH' ? 'bg-emerald-500/10' : d.bias === 'BEARISH' ? 'bg-rose-500/10' : 'bg-slate-500/10'}`}>
+                  {d.bias}
+                </span>
+                {d.premiumDiscount && (
+                  <span
+                    className={`text-[10px] px-2 py-0.5 rounded font-bold ${
+                      d.premiumDiscount.zone === "DISCOUNT"
+                        ? "bg-emerald-500/10 text-emerald-400"
+                        : d.premiumDiscount.zone === "PREMIUM"
+                          ? "bg-rose-500/10 text-rose-400"
+                          : "bg-slate-500/10 text-slate-400"
+                    }`}
+                  >
+                    {d.premiumDiscount.zone} {d.premiumDiscount.percentile}%
+                  </span>
+                )}
+                {d.activeSweep && (
+                  <span className={`text-[10px] px-2 py-0.5 rounded font-bold ${d.activeSweep.type === 'BULL_TRAP' ? 'bg-rose-500/20 text-rose-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                    {d.activeSweep.type}
+                  </span>
+                )}
+                {d.displacement && (
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold">
+                    DISP {d.displacement.strength?.toFixed(1)}x
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-5 gap-3 text-[10px]">
+                {/* FVGs */}
+                <div>
+                  <span className="text-slate-500 font-bold uppercase block mb-1">FVGs</span>
+                  {d.fvgs.length === 0 ? (
+                    <span className="text-slate-600">None</span>
+                  ) : d.fvgs.map((f, i) => (
+                    <div key={i} className={`flex items-center gap-1 ${f.type === 'BULLISH' ? 'text-emerald-500/80' : 'text-rose-500/80'}`}>
+                      <span className="font-mono">{f.bottom.toFixed(2)}-{f.top.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Order Blocks */}
+                <div>
+                  <span className="text-slate-500 font-bold uppercase block mb-1">OBs</span>
+                  {d.orderBlocks.length === 0 ? (
+                    <span className="text-slate-600">None</span>
+                  ) : d.orderBlocks.map((ob, i) => (
+                    <div key={i} className={`flex items-center gap-1 ${ob.type === 'BULLISH' ? 'text-emerald-500/80' : 'text-rose-500/80'}`}>
+                      <span className="font-mono">{ob.bottom.toFixed(2)}-{ob.top.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Sweeps + Metrics */}
+                <div>
+                  <span className="text-slate-500 font-bold uppercase block mb-1">Sweeps</span>
+                  {d.sweeps.length === 0 ? (
+                    <span className="text-slate-600">None</span>
+                  ) : d.sweeps.map((s, i) => (
+                    <div key={i} className={`${s.type === 'BEAR_TRAP' ? 'text-emerald-500/80' : 'text-rose-500/80'}`}>
+                      <span className="font-mono">{s.type} @{s.reference.toFixed(2)}</span>
+                    </div>
+                  ))}
+                  {d.sweepMetrics && (
+                    <div className="text-slate-500 mt-1 font-mono">
+                      {d.sweepMetrics.ageBars}bars | vol:{d.sweepMetrics.volumeRatio.toFixed(1)}x
+                    </div>
+                  )}
+                </div>
+
+                {/* Breaker Blocks */}
+                <div>
+                  <span className="text-slate-500 font-bold uppercase block mb-1">Breakers</span>
+                  {!d.breakerBlocks || d.breakerBlocks.length === 0 ? (
+                    <span className="text-slate-600">None</span>
+                  ) : (
+                    d.breakerBlocks.map((b, i) => (
+                      <div
+                        key={i}
+                        className={`flex items-center gap-1 ${
+                          b.type === "BULLISH"
+                            ? "text-emerald-500/80"
+                            : "text-rose-500/80"
+                        }`}
+                      >
+                        <span className="font-mono">
+                          {b.bottom.toFixed(2)}-{b.top.toFixed(2)}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Inducements */}
+                <div>
+                  <span className="text-slate-500 font-bold uppercase block mb-1">Inducement</span>
+                  {!d.inducements || d.inducements.length === 0 ? (
+                    <span className="text-slate-600">None</span>
+                  ) : (
+                    d.inducements.map((ind, i) => (
+                      <div
+                        key={i}
+                        className={`${
+                          ind.isSwept ? "text-amber-400" : "text-slate-500"
+                        }`}
+                      >
+                        <span className="font-mono">
+                          {ind.type.replace("_INDUCEMENT", "")} @
+                          {ind.level.toFixed(2)}
+                        </span>
+                        {ind.isSwept && (
+                          <span className="ml-1 text-[9px] text-amber-500">
+                            SWEPT
+                          </span>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {d.tierReadiness && (
+                <div className="mt-3 pt-3 border-t border-white/5 flex flex-col gap-2">
+                  <ReadinessChecklist
+                    conditions={d.tierReadiness.conditions}
+                    tier={d.tierReadiness.currentTier}
+                  />
+                  <ReadinessMeter readiness={d.tierReadiness.readiness} />
+                </div>
+              )}
+
+              {/* Displacement pullback zone */}
+              {d.displacement?.pullbackZone && (
+                <div className="mt-2 px-3 py-2 rounded bg-amber-500/5 border border-amber-500/10 flex items-center gap-4 text-[10px]">
+                  <span className="text-amber-500 font-bold uppercase">Pullback Zone</span>
+                  <span className="text-slate-400 font-mono">Entry: {d.displacement.pullbackZone.entry.toFixed(2)}</span>
+                  <span className="text-slate-400 font-mono">Stop: {d.displacement.pullbackZone.stop.toFixed(2)}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 interface State {
   snapshot: Snapshot;
   portfolio: {
@@ -390,6 +743,7 @@ interface State {
   history: TradeHistoryItem[];
   marketTickers: MarketTicker[];
   aiAnalysis: AiAnalysisEntry[];
+  smcData: Record<string, SmcSymbolData>;
 }
 
 function App() {
@@ -414,10 +768,22 @@ function App() {
     history: [],
     marketTickers: [],
     aiAnalysis: [],
+    smcData: {},
   });
 
   const [error, setError] = useState<string | null>(null);
+  const [currentTier, setCurrentTier] = useState<AggressionTier>("moderate");
   const cancelledRef = useRef(false);
+
+  useEffect(() => {
+    const apiHost = import.meta.env.VITE_ARES_API_URL ?? "http://localhost:3001";
+    fetch(`${apiHost}/api/config/tier`)
+      .then((r) => r.json())
+      .then((data: { tier?: AggressionTier }) => {
+        if (data.tier) setCurrentTier(data.tier);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     cancelledRef.current = false;
@@ -492,7 +858,7 @@ function App() {
               entryPrice: Number(h.entryPrice ?? 0),
               exitPrice: Number(h.slFilledPrice ?? h.tp1FilledPrice ?? h.entryPrice ?? 0),
               pnl: Number(h.realizedPnl ?? h.pnl ?? 0),
-              status: (h.exitReason === 'TP1' || h.exitReason === 'TP2' ? 'TP' : h.exitReason === 'SL' ? 'SL' : 'FORCE_CLOSED') as 'TP' | 'SL' | 'FORCE_CLOSED',
+              status: (h.exitReason === 'TP1' || h.exitReason === 'TP2' || h.exitReason === 'PROFIT_TARGET' ? 'TP' : h.exitReason === 'SL' ? 'SL' : 'FORCE_CLOSED') as 'TP' | 'SL' | 'FORCE_CLOSED',
               time: new Date(Number(h.closedTime ?? h.entryTime ?? 0)).toLocaleTimeString(),
             })),
             marketTickers: Array.isArray(data.market?.tickers)
@@ -510,6 +876,7 @@ function App() {
                   timestamp: Number(a.timestamp ?? 0),
                 }))
               : [],
+            smcData: (data.smcData && typeof data.smcData === 'object') ? data.smcData as Record<string, SmcSymbolData> : {},
           });
         } catch {
           // ignore invalid JSON
@@ -534,10 +901,21 @@ function App() {
     };
   }, []);
 
-  const { snapshot, portfolio, activePositions, history, marketTickers, aiAnalysis } = state;
+  const { snapshot, portfolio, activePositions, history, marketTickers, aiAnalysis, smcData } = state;
   const totalBalance = portfolio.balance;
   const totalPnl = portfolio.totalPnl;
   const dailyPnl = portfolio.dailyPnl;
+
+  type NavTab = "dashboard" | "engine" | "risk" | "scanner" | "reports";
+  const [activeTab, setActiveTab] = useState<NavTab>("dashboard");
+
+  const navTabs: { id: NavTab; label: string }[] = [
+    { id: "dashboard", label: "Dashboard" },
+    { id: "engine", label: "Engine" },
+    { id: "risk", label: "Risk" },
+    { id: "scanner", label: "Scanner" },
+    { id: "reports", label: "Reports" },
+  ];
 
   return (
     <div className="dashboard-root min-h-screen text-slate-100 flex flex-col">
@@ -548,18 +926,27 @@ function App() {
             <span className="text-[8px] uppercase tracking-[0.4em] font-black text-slate-500">Trader Terminal</span>
           </div>
 
-          <nav className="hidden lg:flex items-center gap-6">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-500 ring-1 ring-blue-500/20">
-              <Zap size={14} />
-              <span className="text-[10px] font-black uppercase tracking-widest">Dashboard</span>
-            </div>
-            {['Engine', 'Risk', 'Scanner', 'Reports'].map(item => (
-              <span key={item} className="text-[10px] font-bold uppercase tracking-widest text-slate-500 hover:text-white cursor-pointer transition-colors px-2">{item}</span>
+          <nav className="hidden lg:flex items-center gap-2">
+            {navTabs.map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setActiveTab(id)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors ${
+                  activeTab === id
+                    ? "bg-blue-500/10 text-blue-500 ring-1 ring-blue-500/20"
+                    : "text-slate-500 hover:text-white hover:bg-white/5"
+                }`}
+              >
+                {id === "dashboard" && <Zap size={14} />}
+                {label}
+              </button>
             ))}
           </nav>
         </div>
 
         <div className="flex items-center gap-6">
+          <TierSelector current={currentTier} onChange={setCurrentTier} />
           <div className="flex items-center gap-2 px-4 py-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/5 group">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_10px_#10b981]" />
             <span className="text-[10px] font-black text-emerald-500 tracking-wider">SYSTEM.{snapshot.system}</span>
@@ -584,11 +971,126 @@ function App() {
           </div>
         )}
 
+        {activeTab === "engine" && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <MetricCard title="Equity Balance" value={`₹${formatRaw(totalBalance)}`} icon={Wallet} color="blue" />
+              <MetricCard title="Active Signals" value={String(activePositions.length)} subValue="ScanActive" icon={Activity} color="purple" trend="up" />
+            </div>
+            <CurrentTrendStrip snapshot={snapshot} />
+            <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <StateCard
+                title="Regime"
+                activeState={snapshot.regime}
+                allStates={["TRENDING_BULL", "TRENDING_BEAR", "RANGING", "VOLATILE_EXPANSION", "VOLATILE_COMPRESSION", "UNKNOWN"]}
+                formatLabel={regimeLabel}
+                icon={TrendingDown}
+                color="purple"
+              />
+              <StateCard
+                title="Structure"
+                activeState={snapshot.structure}
+                allStates={["BULLISH_STRUCTURE", "BEARISH_STRUCTURE", "BOS_CONFIRMED", "CHOCH_CONFIRMED", "LIQUIDITY_SWEEP", "PULLBACK_PHASE", "NONE"]}
+                formatLabel={structureLabel}
+                icon={Layers}
+                color="indigo"
+              />
+              <StateCard
+                title="Signal"
+                activeState={snapshot.signal}
+                allStates={["IDLE", "HTF_BIAS_CONFIRMED", "STRUCTURE_ALIGNED", "READY_TO_EXECUTE", "ORDER_FILLED", "INVALIDATED"]}
+                formatLabel={signalLabel}
+                icon={Zap}
+                color="amber"
+              />
+            </section>
+            <div className="glass p-6 border-l-4 border-l-blue-500/50">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Engine status</h3>
+              <p className="text-[10px] text-slate-500">System: {snapshot.system} · Regime: {regimeLabel(snapshot.regime)} · Structure: {structureLabel(snapshot.structure)} · Signal: {signalLabel(snapshot.signal)}</p>
+            </div>
+          </>
+        )}
+
+        {activeTab === "risk" && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <MetricCard title="Equity Balance" value={`₹${formatRaw(totalBalance)}`} icon={Wallet} color="blue" />
+              <MetricCard title="Total PnL" value={`₹${formatRaw(totalPnl)}`} subValue={`${formatRaw(portfolio.winRate)} WR`} icon={BarChart3} color="emerald" trend="up" />
+              <MetricCard title="Daily PnL" value={`₹${formatRaw(dailyPnl)}`} icon={TrendingUp} color="emerald" trend="up" />
+              <MetricCard title="Risk state" value={snapshot.risk} icon={ShieldCheck} color="rose" />
+            </div>
+            <div className="glass p-6 border-l-4 border-l-rose-500/50 max-w-2xl">
+              <div className="flex items-center gap-2 mb-4">
+                <ShieldCheck size={18} className="text-rose-500" />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Security & Risk</h3>
+              </div>
+              <div className="flex flex-col gap-3">
+                <div className="flex justify-between items-center p-2 rounded bg-rose-500/5 border border-rose-500/10">
+                  <span className="text-[10px] font-bold text-rose-500/80 uppercase">Daily Drawdown Limit</span>
+                  <span className="text-[10px] font-black text-rose-500">2.0%</span>
+                </div>
+                <div className="flex justify-between items-center p-2 rounded bg-emerald-500/5 border border-emerald-500/10">
+                  <span className="text-[10px] font-bold text-emerald-500/80 uppercase">Max Consec Losses</span>
+                  <span className="text-[10px] font-black text-emerald-500">3/5</span>
+                </div>
+                <div className="flex justify-between items-center p-2 rounded bg-blue-500/5 border border-blue-500/10">
+                  <span className="text-[10px] font-bold text-blue-500/80 uppercase">API Latency</span>
+                  <span className="text-[10px] font-black text-blue-500">24ms</span>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {activeTab === "scanner" && (
+          <>
+            <CurrentTrendStrip snapshot={snapshot} />
+            {marketTickers.length > 0 && (
+              <section className="glass overflow-hidden">
+                <div className="px-6 py-4 border-b border-white/5 flex items-center gap-2 bg-white/[0.02]">
+                  <Activity size={16} className="text-slate-400" />
+                  <h2 className="text-sm font-bold uppercase tracking-widest text-slate-400">Futures Watchlist</h2>
+                  <span className="text-[10px] text-slate-500">Live from Delta Exchange</span>
+                </div>
+                <div className="p-4 flex flex-wrap gap-4">
+                  {marketTickers.map((t) => (
+                    <div
+                      key={t.symbol}
+                      className="px-4 py-2 rounded-lg bg-white/5 border border-white/10 flex items-baseline gap-3 min-w-[140px]"
+                    >
+                      <span className="text-xs font-black text-slate-300">{t.symbol}</span>
+                      <FlashValue value={t.lastPrice}>
+                        <span className="font-mono text-sm font-bold tabular-nums text-white">
+                          {t.lastPrice > 0 ? `$${formatRaw(t.lastPrice)}` : <span className="text-slate-500 font-normal">—</span>}
+                        </span>
+                      </FlashValue>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+            <SmcPanel smcData={smcData} />
+          </>
+        )}
+
+        {activeTab === "reports" && (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <MetricCard title="Equity Balance" value={`₹${formatRaw(totalBalance)}`} icon={Wallet} color="blue" />
+              <MetricCard title="Total PnL" value={`₹${formatRaw(totalPnl)}`} subValue={`${formatRaw(portfolio.winRate)} WR`} icon={BarChart3} color="emerald" trend="up" />
+              <MetricCard title="Daily PnL" value={`₹${formatRaw(dailyPnl)}`} icon={TrendingUp} color="emerald" trend="up" />
+            </div>
+            <TradeHistoryList history={history} />
+          </>
+        )}
+
+        {activeTab === "dashboard" && (
+          <>
         {/* Portfolio Summary */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <MetricCard title="Equity Balance" value={`$${formatRaw(totalBalance)}`} icon={Wallet} color="blue" />
-          <MetricCard title="Total PnL" value={`$${formatRaw(totalPnl)}`} subValue={`${formatRaw(portfolio.winRate)} WR`} icon={BarChart3} color="emerald" trend="up" />
-          <MetricCard title="Daily PnL" value={`$${formatRaw(dailyPnl)}`} icon={TrendingUp} color="emerald" trend="up" />
+          <MetricCard title="Equity Balance" value={`₹${formatRaw(totalBalance)}`} icon={Wallet} color="blue" />
+          <MetricCard title="Total PnL" value={`₹${formatRaw(totalPnl)}`} subValue={`${formatRaw(portfolio.winRate)} WR`} icon={BarChart3} color="emerald" trend="up" />
+          <MetricCard title="Daily PnL" value={`₹${formatRaw(dailyPnl)}`} icon={TrendingUp} color="emerald" trend="up" />
           <MetricCard title="Active Signals" value={String(activePositions.length)} subValue="ScanActive" icon={Activity} color="purple" trend="up" />
         </div>
 
@@ -633,6 +1135,11 @@ function App() {
 
             <section>
               <PositionTable positions={activePositions} />
+            </section>
+
+            {/* SMC Live Data */}
+            <section>
+              <SmcPanel smcData={smcData} />
             </section>
 
             <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -743,6 +1250,8 @@ function App() {
             </div>
           </div>
         </div>
+          </>
+        )}
       </main>
 
       <footer className="px-8 py-6 border-t border-white/5 bg-black/20 text-slate-600">

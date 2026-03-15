@@ -595,6 +595,7 @@ export class PaperExecutor {
   ) {
     for (const pos of this.positions.all()) {
       if (!this.matchesPosition(pos, productId, productSymbol)) continue;
+      // Profit target % exit is handled by checkProfitTargetExit in main.ts to avoid double-execution
       if (pos.stopPrice == null && pos.targetPrice == null) continue;
       const isLong = pos.side === "LONG";
       const hitStop = pos.stopPrice != null && (isLong ? price <= pos.stopPrice : price >= pos.stopPrice);
@@ -672,9 +673,7 @@ export class PaperExecutor {
   }
 
   private resolveCachedProduct(productId?: number, productSymbol?: string): any {
-    // In current main.ts, we don't strictly have a global product cache access for the executor,
-    // but the executor's state could be extended if we needed full metadata.
-    // For now, we return undefined and let main.ts fallback to contractValue=1 if missing.
-    return undefined;
+    const contractValue = this.resolveContractValue(productId, productSymbol);
+    return { contract_value: contractValue };
   }
 }

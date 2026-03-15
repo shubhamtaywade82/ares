@@ -17,6 +17,14 @@ export interface StructureBreak {
   timestamp: number;
 }
 
+export interface PremiumDiscount {
+  swingHigh: number;
+  swingLow: number;
+  equilibrium: number;
+  zone: "PREMIUM" | "DISCOUNT" | "EQUILIBRIUM";
+  percentile: number;
+}
+
 export class StructureAnalyzer {
   private swings: SwingPoint[] = [];
   private breaks: StructureBreak[] = [];
@@ -42,6 +50,34 @@ export class StructureAnalyzer {
 
   get lastBreaks(): StructureBreak[] {
     return this.breaks.slice(-5);
+  }
+
+  premiumDiscount(price: number): PremiumDiscount | null {
+    const lastHigh = this.swings.filter((s) => s.type === "HIGH").at(-1);
+    const lastLow = this.swings.filter((s) => s.type === "LOW").at(-1);
+    if (!lastHigh || !lastLow || lastHigh.price <= lastLow.price) return null;
+
+    const range = lastHigh.price - lastLow.price;
+    const equilibrium = (lastHigh.price + lastLow.price) / 2;
+    const percentile = ((price - lastLow.price) / range) * 100;
+
+    const eqThreshold = range * 0.02;
+    let zone: PremiumDiscount["zone"];
+    if (Math.abs(price - equilibrium) <= eqThreshold) {
+      zone = "EQUILIBRIUM";
+    } else if (price > equilibrium) {
+      zone = "PREMIUM";
+    } else {
+      zone = "DISCOUNT";
+    }
+
+    return {
+      swingHigh: lastHigh.price,
+      swingLow: lastLow.price,
+      equilibrium,
+      zone,
+      percentile: Math.round(Math.max(0, Math.min(100, percentile))),
+    };
   }
 
   private detectSwings(candles: readonly DeltaCandle[]) {

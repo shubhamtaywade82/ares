@@ -8,6 +8,9 @@ import { KillReason } from "../risk/kill.reasons.js";
 import { PaperExecutor } from "./paper.executor.js";
 import { BracketBuilder } from "./bracket.builder.js";
 import { ActivePosition } from "./trade.types.js";
+import type { ExitReason } from "./trade.types.js";
+
+export type OnPaperBracketClosed = (pos: ActivePosition, exitReason: ExitReason, exitPrice: number) => void;
 
 export class OrderManager {
   private pendingPaperBrackets = new Map<
@@ -19,16 +22,19 @@ export class OrderManager {
       targetPrice: number;
       qty: number;
       clientOrderId: string;
+      entryPrice: number;
+      entryOrderId: string;
     }
   >();
 
   constructor(
     private rest: DeltaRestClient,
     private store: OrderStore,
-    private mode: "paper" | "live" | "backtest",
+    private mode: "paper" | "live" | "backtest" | "dev" | "test_flow",
     private paper?: PaperExecutor,
     private bracketBuilder?: BracketBuilder,
-    private activePositions?: Map<string, ActivePosition>
+    private activePositions?: Map<string, ActivePosition>,
+    private onPaperBracketClosed?: OnPaperBracketClosed
   ) {}
 
   private isPostOnlyRejection(error: unknown): boolean {
@@ -49,7 +55,7 @@ export class OrderManager {
       set.signalContext = req.signalContext;
     }
 
-    if (this.mode === "paper") {
+    if (this.mode === "paper" || this.mode === "dev" || this.mode === "test_flow") {
       if (!this.paper) {
         logger.warn("[ARES.PAPER] Paper executor not configured");
         return set;
@@ -80,6 +86,8 @@ export class OrderManager {
         targetPrice: req.targetPrice,
         qty: req.qty,
         clientOrderId,
+        entryPrice: req.entryPrice,
+        entryOrderId: entry.id,
       });
       logger.info(req, "[ARES.PAPER] Entry submitted");
       return set;
@@ -189,7 +197,32 @@ export class OrderManager {
   }
 
   onPaperOrderUpdate(orderId: string, status: string) {
-    if (this.mode !== "paper" || status !== "closed") return;
+    if ((this.mode !== "paper" && this.mode !== "dev" && this.mode !== "test_flow") || status !== "closed") return;
+
+    // If this is an SL/TP fill, record trade, then remove the position so dashboard updates
+    if (this.activePositions) {
+      for (const [symbol, pos] of this.activePositions) {
+        if (pos.slOrderId === orderId) {
+          this.onPaperBracketClosed?.(pos, "SL", pos.slPrice);
+          this.activePositions.delete(symbol);
+          logger.info(`[ARES.PAPER] Position ${symbol} closed (SL); removed from active positions`);
+          return;
+        }
+        if (pos.tp1OrderId === orderId) {
+          this.onPaperBracketClosed?.(pos, "TP1", pos.tp1Price);
+          this.activePositions.delete(symbol);
+          logger.info(`[ARES.PAPER] Position ${symbol} closed (TP1); removed from active positions`);
+          return;
+        }
+        if (pos.tp2OrderId === orderId) {
+          this.onPaperBracketClosed?.(pos, "TP2", pos.tp2Price);
+          this.activePositions.delete(symbol);
+          logger.info(`[ARES.PAPER] Position ${symbol} closed (TP2); removed from active positions`);
+          return;
+        }
+      }
+    }
+
     const pending = this.pendingPaperBrackets.get(orderId);
     if (!pending || !this.paper) return;
 
@@ -211,6 +244,40 @@ export class OrderManager {
     set.targetOrderId = tp.id;
     this.pendingPaperBrackets.delete(orderId);
     logger.info("[ARES.PAPER] Bracket orders submitted");
+
+    // So dashboard shows active positions in paper/dev: add to activePositions (same shape as live)
+    if (this.activePositions) {
+      const symbolKey = pending.symbol.toUpperCase();
+      const side = pending.side === "LONG" ? "buy" : "sell";
+      this.activePositions.set(symbolKey, {
+        entryOrderId: pending.entryOrderId,
+        symbol: symbolKey,
+        side,
+        entryPrice: pending.entryPrice,
+        entryQty: pending.qty,
+        filledQty: pending.qty,
+        entryTime: Date.now(),
+        stage: "OPEN_FULL",
+        slPrice: pending.stopPrice,
+        tp1Price: pending.targetPrice,
+        tp2Price: pending.targetPrice,
+        slOrderId: stop.id,
+        tp1OrderId: null,
+        tp2OrderId: tp.id,
+        beSlOrderId: null,
+        tp1FillPrice: null,
+        tp1FillQty: null,
+        tp1FilledTime: null,
+        tp2FillPrice: null,
+        tp2FillQty: null,
+        tp2FilledTime: null,
+        slFillPrice: null,
+        slFillQty: null,
+        slFilledTime: null,
+        signal: set.signalContext ?? { htfBias: "UNKNOWN", smcScore: 0, rr: 0, reason: "n/a" },
+      });
+    }
+
     this.paper.setPositionBrackets(undefined, pending.symbol, pending.stopPrice, pending.targetPrice);
   }
 }
