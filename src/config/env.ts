@@ -87,6 +87,8 @@ const EnvSchema = z.object({
   SMC_AGGRESSION: z
     .enum(["aggressive", "moderate", "conservative"])
     .default("moderate"),
+  /** State/API server port (dashboard WebSocket + HTTP). Default 3001. */
+  ARES_API_PORT: optionalNumber.default(3001),
 });
 
 export const env = EnvSchema.parse(process.env);

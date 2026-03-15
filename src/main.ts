@@ -219,7 +219,7 @@ const countOpenTradesBySymbol = (symbol: string): number => {
   return Number.isFinite(size) && size !== 0 ? 1 : 0;
 }
 
-const API_PORT = 3001;
+const API_PORT = env.ARES_API_PORT;
 
 const buildSmcSnapshot = (
   ctx: SymbolContext,
@@ -602,6 +602,15 @@ const scheduleDailyPnlReset = () => {
 }
 
 const bootstrap = async () => {
+  stateServer.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      logger.error(`[ARES.API] Port ${API_PORT} already in use. Stop the other process or set ARES_API_PORT to a different port.`);
+    } else {
+      logger.error(err, "[ARES.API] State server error");
+    }
+    process.exit(1);
+  });
+
   stateServer.listen(API_PORT, "0.0.0.0", () => {
     logger.info(`[ARES.API] State server listening on 0.0.0.0:${API_PORT}`);
     setInterval(() => {
@@ -803,6 +812,17 @@ const bootstrap = async () => {
 }
 
 const scanSymbol = async (ctx: SymbolContext) => {
+  // Prevent concurrent scans for the same symbol (CANDLE_CLOSE + CANDLE_UPDATE fire in parallel)
+  if (ctx.running) return;
+  ctx.running = true;
+  try {
+    await scanSymbolInner(ctx);
+  } finally {
+    ctx.running = false;
+  }
+};
+
+const scanSymbolInner = async (ctx: SymbolContext) => {
   if (KillSwitch.isTriggered()) {
     fsm.setSystemState(SystemState.ERROR);
     return;
@@ -966,53 +986,53 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
 
   const { qty } = res;
 
-  // AI Veto Layer
-  const indicators = ctx.indicators.snapshot("15m");
-  const smcMetrics = ctx.smc.activeSweepMetrics();
+  // AI Veto Layer — skip entirely in dev/test_flow mode to avoid Ollama timeout blocking entries
+  if (!isDevMode()) {
+    const indicators = ctx.indicators.snapshot("15m");
+    const smcMetrics = ctx.smc.activeSweepMetrics();
 
-  const vetoInput: AIVetoInput = {
-    symbol: ctx.symbol,
-    intent: "ENTRY",
-    side: bias as any,
-    lastPrice: currentPrice,
-    timeframeBias: {
-      htf: bias === "LONG" ? "BULL" : "BEAR",
-      rsi: indicators.rsi14 ?? 50,
-      emaSlope: "FLAT", // Simplified
-    },
-    volatility: {
-      atr: indicators.atr14 ?? 0,
-      atrPercentile: 50, // Placeholder
-    },
-    indicators: {
-      ema20: indicators.ema20 ?? 0,
-      ema200: indicators.ema200 ?? 0,
-      vwap: indicators.vwap ?? 0,
-    },
-    marketContext: {
-      session: "ASIA", // Placeholder
-      smc: {
-        activeSweep: ctx.smc.activeSweep?.type,
-        activeSweepAgeMinutes: smcMetrics?.ageMinutes,
-        activeSweepVolumeRatio: smcMetrics?.volumeRatio,
-        nearestBullishOb: ctx.smc.nearestOB(currentPrice, "BULLISH") ?? undefined,
-        nearestBearishOb: ctx.smc.nearestOB(currentPrice, "BEARISH") ?? undefined,
-        nearestBullishFvg: ctx.smc.nearestFVG(currentPrice, "BULLISH") ?? undefined,
-        nearestBearishFvg: ctx.smc.nearestFVG(currentPrice, "BEARISH") ?? undefined,
+    const vetoInput: AIVetoInput = {
+      symbol: ctx.symbol,
+      intent: "ENTRY",
+      side: bias as any,
+      lastPrice: currentPrice,
+      timeframeBias: {
+        htf: bias === "LONG" ? "BULL" : "BEAR",
+        rsi: indicators.rsi14 ?? 50,
+        emaSlope: "FLAT",
+      },
+      volatility: {
+        atr: indicators.atr14 ?? 0,
+        atrPercentile: 50,
+      },
+      indicators: {
+        ema20: indicators.ema20 ?? 0,
+        ema200: indicators.ema200 ?? 0,
+        vwap: indicators.vwap ?? 0,
+      },
+      marketContext: {
+        session: "ASIA",
+        smc: {
+          activeSweep: ctx.smc.activeSweep?.type,
+          activeSweepAgeMinutes: smcMetrics?.ageMinutes,
+          activeSweepVolumeRatio: smcMetrics?.volumeRatio,
+          nearestBullishOb: ctx.smc.nearestOB(currentPrice, "BULLISH") ?? undefined,
+          nearestBearishOb: ctx.smc.nearestOB(currentPrice, "BEARISH") ?? undefined,
+          nearestBullishFvg: ctx.smc.nearestFVG(currentPrice, "BULLISH") ?? undefined,
+          nearestBearishFvg: ctx.smc.nearestFVG(currentPrice, "BEARISH") ?? undefined,
+        }
       }
-    }
-  };
+    };
 
-  const { allowed, reason } = await aiVeto(aiClient, vetoInput);
-  pushAiAnalysis(ctx.symbol, "ENTRY", allowed, reason);
+    const { allowed, reason } = await aiVeto(aiClient, vetoInput);
+    pushAiAnalysis(ctx.symbol, "ENTRY", allowed, reason);
 
-  if (!allowed) {
-    if (isDevMode()) {
-      logger.info("[ARES.DEV] AI veto bypassed — placing entry to exercise full pipeline");
-    } else {
+    if (!allowed) {
       fsm.setSignalState(SignalState.IDLE);
       return;
     }
+  } else {
+    logger.info(`[ARES.DEV] AI veto skipped for ${ctx.symbol} — dev mode`);
   }
 
   const set = await orderManager.execute({
