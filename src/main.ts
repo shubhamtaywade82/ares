@@ -846,8 +846,9 @@ const scanSymbol = async (ctx: SymbolContext) => {
     logger.debug(
       `[ARES.STRATEGY] Tier '${tier}' gate not passed for ${ctx.symbol}. Unmet: ${tierResult.unmet.join(", ")}`
     );
-    fsm.setSignalState(SignalState.HTF_BIAS_CONFIRMED);
-    if (ctx.structure.lastBias)
+    if (fsm.canTransitionToSignal(SignalState.HTF_BIAS_CONFIRMED))
+      fsm.setSignalState(SignalState.HTF_BIAS_CONFIRMED);
+    if (ctx.structure.lastBias && fsm.canTransitionToSignal(SignalState.STRUCTURE_ALIGNED))
       fsm.setSignalState(SignalState.STRUCTURE_ALIGNED);
     return;
   }
@@ -894,18 +895,26 @@ const scanSymbol = async (ctx: SymbolContext) => {
         `[ARES.${isTestFlowMode() ? "TEST" : isDevMode() ? "DEV" : "PAPER"}] Synthetic displacement for ${ctx.symbol} (bias=${effectiveBias}) — exercising full pipeline`
       );
     }
-    // Drive FSM through valid path so dashboard shows Bias OK → Aligned → Ready
-    fsm.setSignalState(SignalState.HTF_BIAS_CONFIRMED);
-    fsm.setSignalState(SignalState.STRUCTURE_ALIGNED);
-    fsm.setSignalState(SignalState.DISPLACEMENT_DETECTED);
-    fsm.setSignalState(SignalState.PULLBACK_DETECTED);
-    fsm.setSignalState(SignalState.REJECTION_CONFIRMED);
-    fsm.setSignalState(SignalState.READY_TO_EXECUTE);
+    // Drive FSM through valid path so dashboard shows Bias OK → Aligned → Ready (only if transition allowed)
+    if (fsm.canTransitionToSignal(SignalState.HTF_BIAS_CONFIRMED))
+      fsm.setSignalState(SignalState.HTF_BIAS_CONFIRMED);
+    if (fsm.canTransitionToSignal(SignalState.STRUCTURE_ALIGNED))
+      fsm.setSignalState(SignalState.STRUCTURE_ALIGNED);
+    if (fsm.canTransitionToSignal(SignalState.DISPLACEMENT_DETECTED))
+      fsm.setSignalState(SignalState.DISPLACEMENT_DETECTED);
+    if (fsm.canTransitionToSignal(SignalState.PULLBACK_DETECTED))
+      fsm.setSignalState(SignalState.PULLBACK_DETECTED);
+    if (fsm.canTransitionToSignal(SignalState.REJECTION_CONFIRMED))
+      fsm.setSignalState(SignalState.REJECTION_CONFIRMED);
+    if (fsm.canTransitionToSignal(SignalState.READY_TO_EXECUTE))
+      fsm.setSignalState(SignalState.READY_TO_EXECUTE);
     await executeEntry(ctx, effectiveBias, displacement);
   } else {
-    // Update FSM so dashboard shows Bias OK / Aligned even when no displacement yet
-    fsm.setSignalState(SignalState.HTF_BIAS_CONFIRMED);
-    if (ctx.structure.lastBias) fsm.setSignalState(SignalState.STRUCTURE_ALIGNED);
+    // Update FSM so dashboard shows Bias OK / Aligned even when no displacement yet (only if transition allowed)
+    if (fsm.canTransitionToSignal(SignalState.HTF_BIAS_CONFIRMED))
+      fsm.setSignalState(SignalState.HTF_BIAS_CONFIRMED);
+    if (ctx.structure.lastBias && fsm.canTransitionToSignal(SignalState.STRUCTURE_ALIGNED))
+      fsm.setSignalState(SignalState.STRUCTURE_ALIGNED);
   }
 };
 
@@ -935,6 +944,9 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
   }
 
   // Position Sizing
+  const minLotSize = Number(ctx.cachedProduct?.lot_size ?? 1);
+  const contractValue = Number(ctx.cachedProduct?.contract_value ?? 1);
+  logger.info(`[ARES.SIZING] ${ctx.symbol} entry=${currentPrice.toFixed(2)} stop=${stop.toFixed(2)} equity=${riskCtx.equity.toFixed(2)} avail=${riskCtx.availableBalance.toFixed(2)} contractValue=${contractValue} lotSize=${minLotSize} product=${ctx.cachedProduct ? 'loaded' : 'MISSING'}`);
   const res = calculatePositionSize({
     equity: riskCtx.equity,
     availableBalance: riskCtx.availableBalance,
@@ -942,8 +954,8 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
     entryPrice: currentPrice,
     stopPrice: stop,
     side: bias as any,
-    minLotSize: Number(ctx.cachedProduct?.lot_size ?? 1),
-    contractValue: Number(ctx.cachedProduct?.contract_value ?? 1),
+    minLotSize,
+    contractValue,
     inrToUsd: 1 / RISK_CONFIG.USDINR,
   });
 
@@ -1014,7 +1026,8 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
     signalContext: { htfBias: bias, smcScore: 0.8, rr: RISK_CONFIG.minRR, reason: "Active Displacement" }
   });
 
-  if (set?.entryOrderId) fsm.setSignalState(SignalState.ORDER_PLACED);
+  if (set?.entryOrderId && fsm.canTransitionToSignal(SignalState.ORDER_PLACED))
+    fsm.setSignalState(SignalState.ORDER_PLACED);
 }
 
 const handleOhlcvMessage = (msg: any) => {

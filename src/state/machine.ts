@@ -77,6 +77,11 @@ export class ARESStateMachine {
     this.lastUpdate = Date.now();
   }
 
+  /** Returns true if transitioning to newState from current signal state is allowed. */
+  public canTransitionToSignal(newState: SignalState): boolean {
+    return this.validateSignalTransition(this.signal, newState);
+  }
+
   /**
    * 5. Position Lifecycle Transitions
    */
