@@ -1,5 +1,6 @@
 import "dotenv/config";
 import http from "http";
+import { v4 as uuid } from "uuid";
 import { WebSocketServer } from "ws";
 import { logger } from "./utils/logger.js";
 import { ARESStateMachine } from "./state/machine.js";
@@ -16,7 +17,7 @@ import { DeltaRestClient } from "./delta/rest.client.js";
 import { DeltaWsClient } from "./delta/ws.client.js";
 import { MarketCache } from "./market/market.cache.js";
 import { bootstrapMarket } from "./market/bootstrap.js";
-import { env } from "./config/env.js";
+import { env, isDevMode, isSimulatedMode, isTestFlowMode } from "./config/env.js";
 import { KillSwitch } from "./risk/kill.switch.js";
 import { KillReason } from "./risk/kill.reasons.js";
 import { IndicatorCache } from "./indicators/indicator.cache.js";
@@ -28,7 +29,7 @@ import { createAIClientFromEnv } from "./ai/ai.client.js";
 import { aiVeto } from "./ai/ai.veto.js";
 import { AIVetoInput } from "./ai/ai.types.js";
 import { OrderStore } from "./state/order.store.js";
-import { OrderManager } from "./execution/order.manager.js";
+import { OrderManager, OnPaperBracketClosed } from "./execution/order.manager.js";
 import { RiskContext } from "./risk/types.js";
 import { PaperExecutor } from "./execution/paper.executor.js";
 import { PositionStore } from "./state/position.store.js";
@@ -36,10 +37,19 @@ import { PnlTracker } from "./state/pnl.tracker.js";
 import { OcoManager } from "./execution/oco.manager.js";
 import { StructureAnalyzer } from "./strategy/structure.js";
 import { SmcAnalyzer } from "./strategy/smc.js";
+import { getRuntimeTier, setRuntimeTier } from "./config/runtime.js";
+import type { AggressionTier } from "./config/runtime.js";
+import {
+  SmcStateSnapshot,
+  evaluateTierReadiness,
+  TIER_REQUIREMENTS,
+} from "./strategy/tier.filter.js";
 import { savePaperState, loadPaperState } from "./state/persistence.js";
 import { BracketBuilder } from "./execution/bracket.builder.js";
 import { TradeJournal } from "./execution/trade.journal.js";
-import { ActivePosition } from "./execution/trade.types.js";
+import { ActivePosition, ExitReason, TradeRecord } from "./execution/trade.types.js";
+import { calculatePnl, calculateRMultiple } from "./execution/pnl.js";
+import { ExitManager } from "./execution/exit.manager.js";
 import { calculatePositionSize } from "./risk/position.sizer.js";
 
 import { eventBus, MarketEventType, CandleEvent } from "./market/event.bus.js";
@@ -93,16 +103,73 @@ const orderStore = new OrderStore();
 const positions = new PositionStore();
 const pnl = new PnlTracker();
 const fsm = new ARESStateMachine();
-const paper = env.TRADING_MODE === "paper" ? new PaperExecutor(positions, pnl) : undefined;
+const paper = isSimulatedMode() ? new PaperExecutor(positions, pnl) : undefined;
 const ocoManager = new OcoManager(orderStore, rest, env.TRADING_MODE, paper);
 const activePositions = new Map<string, ActivePosition>();
+/** Per-symbol entry lock — prevents multiple concurrent executeEntry() calls from opening duplicate positions. */
+const entryLocks = new Set<string>();
 const bracketBuilder = new BracketBuilder(rest);
 const tradeJournal = new TradeJournal();
-const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE, paper, bracketBuilder, activePositions);
+const onPaperBracketClosed: OnPaperBracketClosed = (pos, exitReason, exitPrice) => {
+  const contractValue = Number(symbolContexts.get(pos.symbol)?.cachedProduct?.contract_value ?? 1);
+  const pnlUsd = calculatePnl(pos.side, pos.entryPrice, exitPrice, pos.filledQty, contractValue);
+  const riskUsdt = Math.abs(pos.entryPrice - pos.slPrice) * pos.entryQty * contractValue;
+  const record: TradeRecord = {
+    id: uuid(),
+    symbol: pos.symbol,
+    side: pos.side,
+    entryPrice: pos.entryPrice,
+    entryQty: pos.entryQty,
+    entryTime: pos.entryTime,
+    tp1Price: pos.tp1Price,
+    tp1FilledPrice: pos.tp1FillPrice,
+    tp1FilledQty: pos.tp1FillQty,
+    tp1FilledTime: pos.tp1FilledTime,
+    tp2Price: pos.tp2Price,
+    tp2FilledPrice: pos.tp2FillPrice,
+    tp2FilledQty: pos.tp2FillQty,
+    tp2FilledTime: pos.tp2FilledTime,
+    slPrice: pos.slPrice,
+    slFilledPrice: null,
+    slFilledQty: null,
+    slFilledTime: null,
+    exitReason,
+    realizedPnl: pnlUsd,
+    rMultiple: calculateRMultiple(pnlUsd, riskUsdt),
+    closedTime: Date.now(),
+    signal: pos.signal,
+    entryOrderId: pos.entryOrderId,
+    slOrderId: pos.slOrderId,
+    tp1OrderId: pos.tp1OrderId,
+    tp2OrderId: pos.tp2OrderId,
+  };
+  tradeJournal.write(record);
+  pnl.record(pnlUsd * RISK_CONFIG.USDINR);
+};
+
+const orderManager = new OrderManager(rest, orderStore, env.TRADING_MODE, paper, bracketBuilder, activePositions, onPaperBracketClosed);
+const exitManager = new ExitManager(rest, bracketBuilder, tradeJournal, activePositions, {
+  isDailyLossBreached: () => {
+    const equity = cachedBalance ?? env.PAPER_BALANCE ?? 0;
+    const dailyPnl = pnl.value - dailyPnlBaseline;
+    return dailyPnl <= -(equity * RISK_CONFIG.maxDailyLossPct);
+  },
+  recordTrade: (pnlValue: number) => {
+    pnl.record(pnlValue * RISK_CONFIG.USDINR);
+  },
+  activateKillSwitch: (reason: string) => {
+    KillSwitch.trigger(KillReason.MAX_DAILY_LOSS, { reason });
+  },
+  resolveContractValue: (symbol: string) => {
+    return Number(symbolContexts.get(symbol.toUpperCase())?.cachedProduct?.contract_value ?? 1);
+  },
+});
 
 const symbolContexts = new Map<string, SymbolContext>();
 const livePositions = new Map<string, any>();
 const watchlistLtps = new Map<string, number>();
+
+const closingSymbols = new Set<string>();
 
 const AI_ANALYSIS_LOG_MAX = 20;
 const aiAnalysisLog: Array<{ symbol: string; intent: string; decision: "ALLOW" | "BLOCK"; reason: string; timestamp: number }> = [];
@@ -123,11 +190,11 @@ let dailyPnlBaseline = 0;
 
 const getRiskContext = async (symbol: string): Promise<RiskContext> => {
   let balance =
-    env.TRADING_MODE === "paper"
+    isSimulatedMode()
       ? env.PAPER_BALANCE ?? cachedBalance ?? 0
       : cachedBalance ?? 0;
 
-  if (env.TRADING_MODE !== "paper") {
+  if (!isSimulatedMode()) {
     try {
       const res = await rest.getBalances();
       const balances = Array.isArray(res?.result) ? res.result : [];
@@ -146,7 +213,7 @@ const getRiskContext = async (symbol: string): Promise<RiskContext> => {
     }
   }
 
-  if (env.TRADING_MODE === "paper" && balance <= 0 && env.PAPER_BALANCE != null) {
+  if (isSimulatedMode() && balance <= 0 && env.PAPER_BALANCE != null) {
       balance = env.PAPER_BALANCE;
       cachedBalance = balance;
   }
@@ -154,7 +221,7 @@ const getRiskContext = async (symbol: string): Promise<RiskContext> => {
   let equity = balance;
   let availableBalance = balance;
 
-  if (env.TRADING_MODE === "paper") {
+  if (isSimulatedMode()) {
     equity = balance + pnl.value;
     let usedMargin = 0;
     for (const pos of positions.all()) {
@@ -178,13 +245,13 @@ const getRiskContext = async (symbol: string): Promise<RiskContext> => {
     availableBalance,
     openTrades,
     openTradesBySymbol,
-    dailyPnl: env.TRADING_MODE === "paper" ? pnl.value - dailyPnlBaseline : 0,
+    dailyPnl: isSimulatedMode() ? pnl.value - dailyPnlBaseline : 0,
   };
 }
 
 const countOpenTradesBySymbol = (symbol: string): number => {
   const key = symbol.toUpperCase();
-  if (env.TRADING_MODE === "paper") {
+  if (isSimulatedMode()) {
     return positions.all().filter((pos) => pos.productSymbol?.toUpperCase() === key).length;
   }
   const pos = livePositions.get(key);
@@ -192,7 +259,159 @@ const countOpenTradesBySymbol = (symbol: string): number => {
   return Number.isFinite(size) && size !== 0 ? 1 : 0;
 }
 
-const API_PORT = 3001;
+const API_PORT = env.ARES_API_PORT;
+
+const buildSmcSnapshot = (
+  ctx: SymbolContext,
+  effectiveBias: string
+): SmcStateSnapshot => {
+  const currentPrice = ctx.market.lastPrice();
+  const pd = ctx.structure.premiumDiscount(currentPrice);
+
+  const isLong = effectiveBias === "LONG";
+  const premiumDiscountAligned =
+    pd !== null &&
+    pd.zone !== "EQUILIBRIUM" &&
+    ((isLong && pd.zone === "DISCOUNT") || (!isLong && pd.zone === "PREMIUM"));
+
+  return {
+    htfBiasAligned: effectiveBias !== "NONE",
+    inObZone: !!ctx.smc.nearestOB(
+      currentPrice,
+      isLong ? "BULLISH" : "BEARISH"
+    )?.isInside,
+    inFvgZone: !!ctx.smc.nearestFVG(
+      currentPrice,
+      isLong ? "BULLISH" : "BEARISH"
+    )?.isInside,
+    sweepDetected: ctx.smc.activeSweep !== undefined,
+    displacementDetected: ctx.smc.lastDisplacement !== null,
+    bosConfirmed: ctx.structure.lastBreaks.some((b) =>
+      isLong
+        ? b.side === "UP" && b.type === "BOS"
+        : b.side === "DOWN" && b.type === "BOS"
+    ),
+    breakerConfluence: !!ctx.smc.nearestBreaker(
+      currentPrice,
+      isLong ? "BULLISH" : "BEARISH"
+    )?.isInside,
+    inducementDetected: (() => {
+      const ind = ctx.smc.activeInducement;
+      if (!ind) return false;
+      return (
+        (isLong &&
+          ind.type === "BEAR_INDUCEMENT" &&
+          ind.isSwept) ||
+        (!isLong && ind.type === "BULL_INDUCEMENT" && ind.isSwept)
+      );
+    })(),
+    premiumDiscountAligned,
+    premiumDiscount: pd,
+  };
+};
+
+/** Build list of open positions for dashboard: activePositions + live WS positions (live) or PositionStore (paper) so UI always shows current state. */
+function getDisplayPositions(): Array<ActivePosition & { markPrice: number; pnl: number; pnlPercent: number }> {
+  const bySymbol = new Map<string, ActivePosition>();
+
+  for (const pos of activePositions.values()) bySymbol.set(pos.symbol, pos);
+  const activeCountBefore = bySymbol.size;
+
+  if (env.TRADING_MODE === "live") {
+    for (const [symbol, data] of livePositions) {
+      const size = Math.abs(Number(data?.size ?? 0));
+      if (size <= 0 || bySymbol.has(symbol)) continue;
+      const rawSize = Number(data.size ?? 0);
+      bySymbol.set(symbol, {
+        entryOrderId: "ws",
+        symbol,
+        side: rawSize > 0 ? "buy" : "sell",
+        entryPrice: Number(data.entry_price ?? 0),
+        entryQty: size,
+        filledQty: size,
+        entryTime: Date.now(),
+        stage: "OPEN_FULL",
+        slPrice: 0,
+        tp1Price: 0,
+        tp2Price: 0,
+        slOrderId: null,
+        tp1OrderId: null,
+        tp2OrderId: null,
+        beSlOrderId: null,
+        tp1FillPrice: null,
+        tp1FillQty: null,
+        tp1FilledTime: null,
+        tp2FillPrice: null,
+        tp2FillQty: null,
+        tp2FilledTime: null,
+        slFillPrice: null,
+        slFillQty: null,
+        slFilledTime: null,
+        signal: { htfBias: "UNKNOWN", smcScore: 0, rr: 0, reason: "ws" },
+      });
+    }
+  }
+
+  const liveCount = bySymbol.size - activeCountBefore;
+
+  if (isSimulatedMode()) {
+    const paperPositions = positions.all();
+    for (const pos of paperPositions) {
+      const symbol = (pos.productSymbol ?? "").toUpperCase();
+      if (!symbol || bySymbol.has(symbol)) continue;
+      bySymbol.set(symbol, {
+        entryOrderId: "paper",
+        symbol,
+        side: pos.side === "LONG" ? "buy" : "sell",
+        entryPrice: pos.entryPrice,
+        entryQty: pos.qty,
+        filledQty: pos.qty,
+        entryTime: Date.now(),
+        stage: "OPEN_FULL",
+        slPrice: pos.stopPrice ?? 0,
+        tp1Price: pos.targetPrice ?? 0,
+        tp2Price: pos.targetPrice ?? 0,
+        slOrderId: null,
+        tp1OrderId: null,
+        tp2OrderId: null,
+        beSlOrderId: null,
+        tp1FillPrice: null,
+        tp1FillQty: null,
+        tp1FilledTime: null,
+        tp2FillPrice: null,
+        tp2FillQty: null,
+        tp2FilledTime: null,
+        slFillPrice: null,
+        slFillQty: null,
+        slFilledTime: null,
+        signal: { htfBias: "UNKNOWN", smcScore: 0, rr: 0, reason: "paper" },
+      });
+    }
+    if (paperPositions.length > 0 && bySymbol.size === activeCountBefore + liveCount) {
+       logger.debug(`[ARES.API] getDisplayPositions: Found ${paperPositions.length} paper positions in store, but they were already in bySymbol or had invalid symbols.`);
+    }
+  }
+
+  const result = Array.from(bySymbol.values()).map((pos) => {
+    const markPrice = watchlistLtps.get(pos.symbol) ?? pos.entryPrice;
+    const contractValue = Number(
+      symbolContexts.get(pos.symbol)?.cachedProduct?.contract_value ?? 1
+    );
+    const leverage = resolveMaxLeverage(pos.symbol);
+    const direction = pos.side === "buy" ? 1 : -1;
+    const pnlUsd = direction * (markPrice - pos.entryPrice) * pos.filledQty * contractValue;
+    const positionPnl = pnlUsd * RISK_CONFIG.USDINR;
+    const marginINR = pos.entryPrice * pos.filledQty * contractValue * RISK_CONFIG.USDINR / leverage;
+    const pnlPercent = marginINR > 0 ? (positionPnl / marginINR) * 100 : 0;
+    return { ...pos, markPrice, pnl: positionPnl, pnlPercent };
+  });
+
+  if (result.length > 0) {
+    logger.debug(`[ARES.API] getDisplayPositions gathering: active=${activeCountBefore}, live=${liveCount}, total=${result.length}`);
+  }
+
+  return result;
+}
 
 const getStatePayload = async (): Promise<object> => {
   const riskCtx = await getRiskContext("BTCUSD");
@@ -218,16 +437,76 @@ const getStatePayload = async (): Promise<object> => {
       dailyPnl: riskCtx.dailyPnl,
       winRate: tradeJournal.stats.winRate,
     },
-    activePositions: Array.from(activePositions.values()),
-    history: tradeJournal.history.slice(-10),
+    activePositions: getDisplayPositions(),
+    history: tradeJournal.history.slice(-50),
     market: { tickers },
     aiAnalysis: aiAnalysisLog.slice(0, 15),
+    smcData: Object.fromEntries(
+      Array.from(symbolContexts.entries()).map(([symbol, ctx]) => {
+        const currentPrice = watchlistLtps.get(symbol) ?? ctx.market.lastPrice();
+        const pd = ctx.structure.premiumDiscount(currentPrice);
+        const bias = ctx.structure.lastBias;
+        const effectiveBias =
+          bias === "BULLISH" ? "LONG" : bias === "BEARISH" ? "SHORT" : "NONE";
+        const snapshot = buildSmcSnapshot(ctx, effectiveBias);
+        const tier = getRuntimeTier();
+        const tierResult = evaluateTierReadiness(tier, snapshot);
+        const conditionNames: Array<{
+          key: keyof typeof TIER_REQUIREMENTS.aggressive;
+          label: string;
+        }> = [
+          { key: "htfBias", label: "HTF Bias" },
+          { key: "obOrFvgZone", label: "OB/FVG Zone" },
+          { key: "sweep", label: "Sweep" },
+          { key: "displacement", label: "Displacement" },
+          { key: "bos", label: "BOS" },
+          { key: "breaker", label: "Breaker" },
+          { key: "inducement", label: "Inducement" },
+          { key: "premiumDiscount", label: "Prem/Discount" },
+        ];
+        const reqs = TIER_REQUIREMENTS[tier];
+        const conditions = conditionNames
+          .filter(({ key }) => reqs[key] !== "ignored")
+          .map(({ key, label }) => ({
+            name: label,
+            met: tierResult.met.includes(key),
+            required: reqs[key] === "required",
+          }));
+        return [
+          symbol,
+          {
+            bias: ctx.structure.lastBias,
+            swings: ctx.structure.lastSwings.slice(-5),
+            breaks: ctx.structure.lastBreaks.slice(-3),
+            fvgs: ctx.smc.lastFVGs,
+            orderBlocks: ctx.smc.lastOBs,
+            sweeps: ctx.smc.lastSweeps.slice(-3),
+            activeSweep: ctx.smc.activeSweep ?? null,
+            sweepMetrics: ctx.smc.activeSweepMetrics(),
+            displacement: ctx.smc.lastDisplacement,
+            breakerBlocks: ctx.smc.lastBreakers,
+            inducements: ctx.smc.lastInducements,
+            premiumDiscount: pd,
+            tierReadiness: {
+              currentTier: tier,
+              conditions,
+              readiness: tierResult.readiness,
+            },
+          },
+        ];
+      })
+    ),
   };
 }
 
 const stateServer = http.createServer(async (req, res) => {
+  // Do not handle WebSocket upgrade in the request handler — let WebSocketServer take it (otherwise dashboard gets 404 and never receives state)
+  if (req.headers.upgrade === "websocket") {
+    return;
+  }
+
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
@@ -246,10 +525,162 @@ const stateServer = http.createServer(async (req, res) => {
       res.writeHead(500);
       res.end(JSON.stringify({ error: "Internal Server Error" }));
     }
-  } else {
-    res.writeHead(404);
-    res.end();
+    return;
   }
+
+  // Dev/paper only: seed one position for a symbol (e.g. ETHUSD) for monitoring. Uses market order so it fills immediately.
+  if (req.method === "POST" && req.url?.startsWith("/api/dev/seed")) {
+    if (!isSimulatedMode() || !paper) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Seed only available in paper or dev mode" }));
+      return;
+    }
+    const url = new URL(req.url ?? "", `http://localhost`);
+    const symbol = (url.searchParams.get("symbol") ?? "ETHUSD").trim().toUpperCase();
+    const ctx = symbolContexts.get(symbol);
+    if (!ctx) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Symbol ${symbol} not in watchlist` }));
+      return;
+    }
+    if (ctx.productId == null) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Product ID not resolved for ${symbol}` }));
+      return;
+    }
+    if (activePositions.has(symbol)) {
+      res.writeHead(409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: `Position already open for ${symbol}` }));
+      return;
+    }
+    try {
+      const riskCtx = await getRiskContext(symbol);
+      if (riskCtx.equity <= 0) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Equity <= 0; set PAPER_BALANCE" }));
+        return;
+      }
+      if (riskCtx.openTrades >= RISK_CONFIG.maxOpenTradesTotal) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `Max open trades (${RISK_CONFIG.maxOpenTradesTotal}) reached` }));
+        return;
+      }
+      const currentPrice = ctx.market.lastPrice();
+      if (currentPrice <= 0) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: `No price for ${symbol} yet; wait for ticker` }));
+        return;
+      }
+      const atr = ctx.indicators.snapshot("15m").atr14 ?? currentPrice * 0.02;
+      const stopDistance = atr * 1.5;
+      const bias: "LONG" | "SHORT" = "LONG";
+      const stop = bias === "LONG" ? currentPrice - stopDistance : currentPrice + stopDistance;
+      const tp = computeTargets(currentPrice, stop, bias, RISK_CONFIG.minRR);
+      const res_ = calculatePositionSize({
+        equity: riskCtx.equity,
+        availableBalance: riskCtx.availableBalance,
+        symbol,
+        entryPrice: currentPrice,
+        stopPrice: stop,
+        side: bias,
+        minLotSize: Number(ctx.cachedProduct?.lot_size ?? 1),
+        contractValue: Number(ctx.cachedProduct?.contract_value ?? 1),
+        inrToUsd: 1 / RISK_CONFIG.USDINR,
+      });
+      if (!res_ || res_.qty <= 0) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Position size 0; check risk config" }));
+        return;
+      }
+      const set = await orderManager.execute({
+        symbol,
+        productId: ctx.productId,
+        side: bias,
+        entryPrice: currentPrice,
+        qty: res_.qty,
+        stopPrice: stop,
+        targetPrice: tp,
+        useMarketEntry: true,
+        signalContext: { htfBias: bias, smcScore: 0.8, rr: RISK_CONFIG.minRR, reason: "Dev seed" },
+      });
+      // Ensure the market order fills: push a tick so paper executor fills it (in case lastPrice wasn't set yet)
+      paper.onTick(currentPrice, ctx.productId, ctx.symbol);
+      const positionCreated = activePositions.has(symbol);
+      if (positionCreated) logger.info(`[ARES.API] Seed position created for ${symbol}; activePositions now ${activePositions.size}`);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          message: `Seed position placed for ${symbol}`,
+          symbol,
+          side: bias,
+          entryOrderId: set?.entryOrderId,
+          entryPrice: currentPrice,
+          stopPrice: stop,
+          targetPrice: tp,
+          qty: res_.qty,
+          positionCreated,
+          activePositionCount: activePositions.size,
+        })
+      );
+    } catch (err) {
+      logger.error(err, "[ARES.API] Dev seed failed");
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Seed failed", detail: String(err) }));
+    }
+    return;
+  }
+
+  // Dev/paper: debug endpoint to verify active positions (GET so you can open in browser)
+  if (req.method === "GET" && req.url === "/api/dev/active-positions") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        count: activePositions.size,
+        positions: Array.from(activePositions.entries()).map(([sym, p]) => ({
+          symbol: sym,
+          side: p.side,
+          entryPrice: p.entryPrice,
+          entryQty: p.entryQty,
+          slPrice: p.slPrice,
+          tp1Price: p.tp1Price,
+        })),
+      })
+    );
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/config/tier") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ tier: getRuntimeTier() }));
+    return;
+  }
+
+  if (req.method === "POST" && req.url?.startsWith("/api/config/tier")) {
+    const url = new URL(req.url ?? "", "http://localhost");
+    const level = url.searchParams.get("level");
+    const validTiers: AggressionTier[] = [
+      "aggressive",
+      "moderate",
+      "conservative",
+    ];
+    if (!level || !validTiers.includes(level as AggressionTier)) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: `Invalid tier. Must be one of: ${validTiers.join(", ")}`,
+        })
+      );
+      return;
+    }
+    setRuntimeTier(level as AggressionTier);
+    logger.info(`[ARES.CONFIG] Aggression tier changed to '${level}'`);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ tier: level }));
+    return;
+  }
+
+  res.writeHead(404);
+  res.end();
 });
 
 const wss = new WebSocketServer({ server: stateServer });
@@ -260,7 +691,7 @@ const normalizeSymbols = (): string[] => {
   return raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
 }
 
-const resolveProductIdBySymbol = async (restClient: DeltaRestClient, symbol: string): Promise<number | undefined> => {
+const resolveProductBySymbol = async (restClient: DeltaRestClient, symbol: string): Promise<{ productId?: number; product?: any }> => {
   try {
     const res = await restClient.getProducts({
       symbol,
@@ -271,17 +702,19 @@ const resolveProductIdBySymbol = async (restClient: DeltaRestClient, symbol: str
       (p: { symbol?: string; id?: number | string; product_id?: number | string }) =>
         typeof p.symbol === "string" && p.symbol.toUpperCase() === symbol.toUpperCase()
     );
+    if (!match) return {};
     const rawId = match?.id ?? match?.product_id;
     const id = typeof rawId === "string" ? Number(rawId) : rawId;
-    if (Number.isFinite(id)) return Number(id);
+    if (Number.isFinite(id)) return { productId: Number(id), product: match };
+    return { product: match };
   } catch (error) {
-    logger.error(error, `[ARES.MARKET] Failed to resolve product id for ${symbol}:`);
+    logger.error(error, `[ARES.MARKET] Failed to resolve product for ${symbol}:`);
   }
-  return undefined;
+  return {};
 }
 
 const persistState = async () => {
-    if (env.TRADING_MODE === "paper") {
+    if (isSimulatedMode()) {
       await savePaperState({ realizedPnl: pnl.value, positions: positions.all() });
     }
 }
@@ -300,18 +733,17 @@ const scheduleDailyPnlReset = () => {
 }
 
 const bootstrap = async () => {
+  stateServer.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      logger.error(`[ARES.API] Port ${API_PORT} already in use. Stop the other process or set ARES_API_PORT to a different port.`);
+    } else {
+      logger.error(err, "[ARES.API] State server error");
+    }
+    process.exit(1);
+  });
+
   stateServer.listen(API_PORT, "0.0.0.0", () => {
     logger.info(`[ARES.API] State server listening on 0.0.0.0:${API_PORT}`);
-    setInterval(() => {
-      getStatePayload()
-        .then((data) => {
-          const payload = JSON.stringify(data);
-          for (const client of wss.clients) {
-            if (client.readyState === 1) client.send(payload);
-          }
-        })
-        .catch((err) => logger.error(err, "[ARES.API] WebSocket state broadcast failed"));
-    }, 1000);
   });
 
   // AI Health Check
@@ -322,7 +754,7 @@ const bootstrap = async () => {
     logger.info("[ARES.AI] AI Client connected and healthy.");
   }
 
-  if (env.TRADING_MODE === "paper") {
+  if (isSimulatedMode()) {
     const saved = await loadPaperState();
     if (saved) {
       pnl.hydrate(saved.realizedPnl);
@@ -336,7 +768,7 @@ const bootstrap = async () => {
 
   const symbols = normalizeSymbols();
   for (const symbol of symbols) {
-    let productId = await resolveProductIdBySymbol(rest, symbol);
+    const { productId, product } = await resolveProductBySymbol(rest, symbol);
 
     const market = new MarketCache();
     const indicators = new IndicatorCache(market);
@@ -349,11 +781,51 @@ const bootstrap = async () => {
       lastCandleTimes: new Map(),
       running: false,
       productId,
+      cachedProduct: product,
     };
 
     symbolContexts.set(symbol, context);
+
+    // Set leverage and contract value on paper executor for correct margin/PnL calculations
+    if (paper && productId != null) {
+      const leverage = resolveMaxLeverage(symbol);
+      paper.setOrderLeverage(productId, symbol, leverage);
+      const contractValue = Number(product?.contract_value ?? 1);
+      paper.setContractValue(productId, symbol, contractValue);
+    }
+
     await bootstrapMarket(rest, market, symbol);
   }
+
+  // Start broadcast interval ONLY after bootstrap is complete
+  let lastReportTime = 0;
+  setInterval(() => {
+    getStatePayload()
+      .then((data: any) => {
+        const payload = JSON.stringify(data);
+        for (const client of wss.clients) {
+          if (client.readyState === 1) client.send(payload);
+        }
+
+        const now = Date.now();
+        if (now - lastReportTime >= 30000) {
+          const realized = data.portfolio.totalPnl;
+          const unrealized = data.activePositions.reduce((sum: number, p: any) => sum + p.pnl, 0);
+          const daily = data.portfolio.dailyPnl;
+          const total = realized + unrealized;
+          
+          const colorRealized = realized >= 0 ? "\x1b[32m" : "\x1b[31m";
+          const colorUnrealized = unrealized >= 0 ? "\x1b[32m" : "\x1b[31m";
+          const colorDaily = daily >= 0 ? "\x1b[32m" : "\x1b[31m";
+          const colorTotal = total >= 0 ? "\x1b[32m" : "\x1b[31m";
+          const reset = "\x1b[0m";
+
+          logger.info(`[ARES.REPORT] PnL Snapshot | Realized: ${colorRealized}₹${realized.toFixed(2)}${reset} | Unrealized: ${colorUnrealized}₹${unrealized.toFixed(2)}${reset} | Daily: ${colorDaily}₹${daily.toFixed(2)}${reset} | Total: ${colorTotal}₹${total.toFixed(2)}${reset}`);
+          lastReportTime = now;
+        }
+      })
+      .catch((err) => logger.error(err, "[ARES.API] WebSocket state broadcast failed"));
+  }, 1000);
 
   const ws = new DeltaWsClient(
     (msg: any) => {
@@ -368,6 +840,8 @@ const bootstrap = async () => {
         if (ctx) {
           ctx.market.ingestTick(price, 0, Date.now());
           if (paper) paper.onTick(price, ctx.productId, ctx.symbol);
+          // Check profit target exit on every tick for all modes
+          void checkProfitTargetExit(ctx.symbol, price);
         }
       }
       if (msg?.type?.startsWith("candlestick_")) {
@@ -401,7 +875,27 @@ const bootstrap = async () => {
   );
 
   if (paper) {
-    paper.setOnStateChange(persistState);
+    paper.setOnStateChange(async () => {
+      // Sync activePositions with position store — remove closed positions so dashboard updates
+      for (const [symbol] of activePositions) {
+        const pos = positions.getByProduct(undefined, symbol);
+        if (!pos) {
+          activePositions.delete(symbol);
+          logger.info(`[ARES.PAPER] Position ${symbol} closed; removed from active positions`);
+        }
+      }
+      await persistState();
+      // In test_flow mode, if we had a position and now it's gone, we've completed the cycle.
+      if (isTestFlowMode() && positions.all().length === 0 && pnl.value !== dailyPnlBaseline) {
+        const finalPnl = pnl.value - dailyPnlBaseline;
+        logger.info("================================================================");
+        logger.info("TEST FLOW COMPLETED SUCCESSFULLY");
+        logger.info(`Final Realized PnL: ₹${finalPnl.toFixed(2)}`);
+        logger.info("The full lifecycle (entry -> position -> exit) has been verified.");
+        logger.info("================================================================");
+        setTimeout(() => process.exit(0), 1000); // Small delay for logs to flush
+      }
+    });
     paper.setOnOrderUpdate((orderId, status) => {
       orderManager.onPaperOrderUpdate(orderId, status);
       void ocoManager.onOrderUpdate(orderId, status);
@@ -423,12 +917,67 @@ const bootstrap = async () => {
     }
   });
 
+  // Live mode: reconcile existing positions on boot
+  if (env.TRADING_MODE === "live") {
+    try {
+      const positionsRes = await rest.getPositions();
+      const openPositions = Array.isArray(positionsRes?.result) ? positionsRes.result : [];
+      const ordersRes = await rest.getOrders({ state: "open" });
+      const openOrders = Array.isArray(ordersRes?.result) ? ordersRes.result : [];
+
+      await exitManager.reconcileOnBoot(
+        openPositions,
+        openOrders,
+        Boolean(env.BOOT_CLOSE_ORPHAN_POSITIONS),
+        async (symbol: string) => {
+          const pos = openPositions.find(
+            (p: any) => String(p.product_symbol ?? p.symbol ?? "").toUpperCase() === symbol
+          );
+          const size = Math.abs(Number(pos?.size ?? 0));
+          const side = Number(pos?.size ?? 0) > 0 ? "sell" : "buy";
+          if (size > 0) {
+            await rest.placeOrder({
+              product_symbol: symbol,
+              side,
+              order_type: "market_order",
+              size,
+              reduce_only: true,
+            });
+          }
+        }
+      );
+      for (const p of openPositions) {
+        const sym = String(p.product_symbol ?? p.symbol ?? "").toUpperCase();
+        if (sym && Math.abs(Number(p.size ?? 0)) > 0) livePositions.set(sym, p);
+      }
+      logger.info(`[ARES.BOOT] Live reconciliation complete: ${openPositions.length} positions, ${openOrders.length} orders`);
+    } catch (err) {
+      logger.error(err, "[ARES.BOOT] Live reconciliation failed");
+    }
+  }
+
   logger.info("[ARES.BOOT] System ready; transitioning to RUNNING");
+  if (isTestFlowMode()) {
+    logger.info("[ARES.TEST] TEST_FLOW mode active — will force immediate entry and tight exit to verify full pipeline");
+  } else if (isDevMode()) {
+    logger.info("[ARES.DEV] Dev mode active — relaxed gates (daily loss, bias, displacement, AI veto) to exercise full pipeline: entries, positions, brackets, exits, PnL");
+  }
   fsm.setSystemState(SystemState.RUNNING);
   ws.connect();
 }
 
 const scanSymbol = async (ctx: SymbolContext) => {
+  // Prevent concurrent scans for the same symbol (CANDLE_CLOSE + CANDLE_UPDATE fire in parallel)
+  if (ctx.running) return;
+  ctx.running = true;
+  try {
+    await scanSymbolInner(ctx);
+  } finally {
+    ctx.running = false;
+  }
+};
+
+const scanSymbolInner = async (ctx: SymbolContext) => {
   if (KillSwitch.isTriggered()) {
     fsm.setSystemState(SystemState.ERROR);
     return;
@@ -436,19 +985,23 @@ const scanSymbol = async (ctx: SymbolContext) => {
 
   const riskCtx = await getRiskContext(ctx.symbol);
   
-  // Daily Loss Check (percentage based)
-  if (riskCtx.dailyPnl <= -(riskCtx.equity * RISK_CONFIG.maxDailyLossPct)) {
+  // Daily Loss Check (percentage based) — skipped in dev so we can exercise full pipeline
+  if (!isDevMode() && riskCtx.dailyPnl <= -(riskCtx.equity * RISK_CONFIG.maxDailyLossPct)) {
     KillSwitch.trigger(KillReason.MAX_DAILY_LOSS, { pnl: riskCtx.dailyPnl });
     return;
   }
 
   const bias = computeHTFBias(ctx.market, ctx.indicators);
-  if (bias === "NONE") {
+  // In dev mode, force a direction when strategy returns NONE so we can test entries/exits
+  const effectiveBias = (bias === "NONE" && isDevMode())
+    ? (env.FORCE_HTF_BIAS === "SHORT" ? "SHORT" : "LONG")
+    : bias;
+  if (effectiveBias === "NONE") {
     fsm.setMarketRegime(MarketRegime.UNKNOWN);
     return;
   }
 
-  fsm.setMarketRegime(bias === "LONG" ? MarketRegime.TRENDING_BULL : MarketRegime.TRENDING_BEAR);
+  fsm.setMarketRegime(effectiveBias === "LONG" ? MarketRegime.TRENDING_BULL : MarketRegime.TRENDING_BEAR);
 
   // Update structure and SMC context (15m execution TF)
   const candles15m = ctx.market.candles("15m");
@@ -460,6 +1013,20 @@ const scanSymbol = async (ctx: SymbolContext) => {
 
   const atr = ctx.indicators.snapshot("15m").atr14;
   ctx.smc.update(candles15m, ctx.structure.lastBreaks, ctx.structure.lastSwings, true, atr);
+
+  const smcSnapshot = buildSmcSnapshot(ctx, effectiveBias);
+  const tier = getRuntimeTier();
+  const tierResult = evaluateTierReadiness(tier, smcSnapshot);
+  if (!tierResult.passed && !isDevMode()) {
+    logger.debug(
+      `[ARES.STRATEGY] Tier '${tier}' gate not passed for ${ctx.symbol}. Unmet: ${tierResult.unmet.join(", ")}`
+    );
+    if (fsm.canTransitionToSignal(SignalState.HTF_BIAS_CONFIRMED))
+      fsm.setSignalState(SignalState.HTF_BIAS_CONFIRMED);
+    if (ctx.structure.lastBias && fsm.canTransitionToSignal(SignalState.STRUCTURE_ALIGNED))
+      fsm.setSignalState(SignalState.STRUCTURE_ALIGNED);
+    return;
+  }
 
   // Check for ACTIVE candle displacement if in HTF supply/demand
   const currentPrice = ctx.market.lastPrice();
@@ -476,15 +1043,74 @@ const scanSymbol = async (ctx: SymbolContext) => {
       { fvgs: ctx.smc.lastFVGs, sweeps: ctx.smc.lastSweeps, currentBarIndex: candles15m.length }
     ) : null;
 
-  if (activeDisplacement) {
-    logger.info(`[ARES.STRATEGY] ACTIVE displacement detected for ${ctx.symbol}: ${activeDisplacement.type}`);
-    fsm.setSignalState(SignalState.READY_TO_EXECUTE);
-    // Trigger execution logic here...
-    await executeEntry(ctx, bias, activeDisplacement);
+  // Synthetic displacement: dev/test_flow always; paper only when PAPER_SYNTHETIC_DISPLACEMENT=true (so paper can exercise pipeline without rare real SMC displacement).
+  const allowSynthetic =
+    isDevMode() ||
+    (isSimulatedMode() && env.PAPER_SYNTHETIC_DISPLACEMENT && candles15m.length >= 2 && (isTestFlowMode() || (candles15m.length >= 20 && (atr ?? 0) > 0)));
+  const displacement =
+    activeDisplacement ??
+    (allowSynthetic
+      ? {
+          type: effectiveBias,
+          pullbackZone: {
+            entry: currentPrice,
+            stop:
+              effectiveBias === "LONG"
+                ? currentPrice - Math.max(atr ?? 0, currentPrice * 0.001) * 1.5
+                : currentPrice + Math.max(atr ?? 0, currentPrice * 0.001) * 1.5,
+          },
+        }
+      : null);
+
+  if (displacement) {
+    if (activeDisplacement) {
+      logger.info(`[ARES.STRATEGY] ACTIVE displacement detected for ${ctx.symbol}: ${activeDisplacement.type}`);
+    } else {
+      logger.info(
+        `[ARES.${isTestFlowMode() ? "TEST" : isDevMode() ? "DEV" : "PAPER"}] Synthetic displacement for ${ctx.symbol} (bias=${effectiveBias}) — exercising full pipeline`
+      );
+    }
+    // Drive FSM through valid path so dashboard shows Bias OK → Aligned → Ready (only if transition allowed)
+    if (fsm.canTransitionToSignal(SignalState.HTF_BIAS_CONFIRMED))
+      fsm.setSignalState(SignalState.HTF_BIAS_CONFIRMED);
+    if (fsm.canTransitionToSignal(SignalState.STRUCTURE_ALIGNED))
+      fsm.setSignalState(SignalState.STRUCTURE_ALIGNED);
+    if (fsm.canTransitionToSignal(SignalState.DISPLACEMENT_DETECTED))
+      fsm.setSignalState(SignalState.DISPLACEMENT_DETECTED);
+    if (fsm.canTransitionToSignal(SignalState.PULLBACK_DETECTED))
+      fsm.setSignalState(SignalState.PULLBACK_DETECTED);
+    if (fsm.canTransitionToSignal(SignalState.REJECTION_CONFIRMED))
+      fsm.setSignalState(SignalState.REJECTION_CONFIRMED);
+    if (fsm.canTransitionToSignal(SignalState.READY_TO_EXECUTE))
+      fsm.setSignalState(SignalState.READY_TO_EXECUTE);
+    await executeEntry(ctx, effectiveBias, displacement);
+  } else {
+    // Update FSM so dashboard shows Bias OK / Aligned even when no displacement yet (only if transition allowed)
+    if (fsm.canTransitionToSignal(SignalState.HTF_BIAS_CONFIRMED))
+      fsm.setSignalState(SignalState.HTF_BIAS_CONFIRMED);
+    if (ctx.structure.lastBias && fsm.canTransitionToSignal(SignalState.STRUCTURE_ALIGNED))
+      fsm.setSignalState(SignalState.STRUCTURE_ALIGNED);
   }
-}
+};
 
 const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any) => {
+  const sym = ctx.symbol.toUpperCase();
+
+  // Prevent duplicate entries: check both active positions and pending entry lock
+  if (activePositions.has(sym)) return;
+  if (entryLocks.has(sym)) return;
+  // Also check position store (populated immediately on paper fill)
+  if (positions.all().some((p) => p.productSymbol?.toUpperCase() === sym)) return;
+
+  entryLocks.add(sym);
+  try {
+    await executeEntryInner(ctx, bias, displacement);
+  } finally {
+    entryLocks.delete(sym);
+  }
+};
+
+const executeEntryInner = async (ctx: SymbolContext, bias: string, displacement: any) => {
   const riskCtx = await getRiskContext(ctx.symbol);
   if (riskCtx.equity <= 0) return;
 
@@ -494,14 +1120,26 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
     return;
   }
 
-  // Prevent duplicate entries for same symbol
-  if (activePositions.has(ctx.symbol.toUpperCase())) return;
-
   const currentPrice = ctx.market.lastPrice();
-  const stop = displacement.pullbackZone.stop;
-  const tp = computeTargets(currentPrice, stop, bias as any, RISK_CONFIG.minRR);
+  if (!currentPrice || currentPrice <= 0) return; // No market data yet — skip entry
+
+  let stop = displacement.pullbackZone.stop;
+  if (!stop || stop <= 0) return; // Invalid stop — skip entry
+
+  let tp = computeTargets(currentPrice, stop, bias as any, RISK_CONFIG.minRR);
+
+  // In TEST_FLOW mode, force very tight TP/SL to see the exit quickly
+  if (isTestFlowMode()) {
+    const tinyRisk = currentPrice * 0.0005; // 0.05%
+    stop = bias === "LONG" ? currentPrice - tinyRisk : currentPrice + tinyRisk;
+    tp = bias === "LONG" ? currentPrice + tinyRisk : currentPrice - tinyRisk;
+    logger.info(`[ARES.TEST] Forcing tight targets: Entry:${currentPrice.toFixed(2)} SL:${stop.toFixed(2)} TP:${tp.toFixed(2)}`);
+  }
 
   // Position Sizing
+  const minLotSize = Number(ctx.cachedProduct?.lot_size ?? 1);
+  const contractValue = Number(ctx.cachedProduct?.contract_value ?? 1);
+  logger.info(`[ARES.SIZING] ${ctx.symbol} entry=${currentPrice.toFixed(2)} stop=${stop.toFixed(2)} equity=${riskCtx.equity.toFixed(2)} avail=${riskCtx.availableBalance.toFixed(2)} contractValue=${contractValue} lotSize=${minLotSize} product=${ctx.cachedProduct ? 'loaded' : 'MISSING'}`);
   const res = calculatePositionSize({
     equity: riskCtx.equity,
     availableBalance: riskCtx.availableBalance,
@@ -509,8 +1147,8 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
     entryPrice: currentPrice,
     stopPrice: stop,
     side: bias as any,
-    minLotSize: Number(ctx.cachedProduct?.lot_size ?? 1),
-    contractValue: Number(ctx.cachedProduct?.contract_value ?? 1),
+    minLotSize,
+    contractValue,
     inrToUsd: 1 / RISK_CONFIG.USDINR,
   });
 
@@ -521,49 +1159,53 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
 
   const { qty } = res;
 
-  // AI Veto Layer
-  const indicators = ctx.indicators.snapshot("15m");
-  const smcMetrics = ctx.smc.activeSweepMetrics();
+  // AI Veto Layer — skip entirely in dev/test_flow mode to avoid Ollama timeout blocking entries
+  if (!isDevMode()) {
+    const indicators = ctx.indicators.snapshot("15m");
+    const smcMetrics = ctx.smc.activeSweepMetrics();
 
-  const vetoInput: AIVetoInput = {
-    symbol: ctx.symbol,
-    intent: "ENTRY",
-    side: bias as any,
-    lastPrice: currentPrice,
-    timeframeBias: {
-      htf: bias === "LONG" ? "BULL" : "BEAR",
-      rsi: indicators.rsi14 ?? 50,
-      emaSlope: "FLAT", // Simplified
-    },
-    volatility: {
-      atr: indicators.atr14 ?? 0,
-      atrPercentile: 50, // Placeholder
-    },
-    indicators: {
-      ema20: indicators.ema20 ?? 0,
-      ema200: indicators.ema200 ?? 0,
-      vwap: indicators.vwap ?? 0,
-    },
-    marketContext: {
-      session: "ASIA", // Placeholder
-      smc: {
-        activeSweep: ctx.smc.activeSweep?.type,
-        activeSweepAgeMinutes: smcMetrics?.ageMinutes,
-        activeSweepVolumeRatio: smcMetrics?.volumeRatio,
-        nearestBullishOb: ctx.smc.nearestOB(currentPrice, "BULLISH") ?? undefined,
-        nearestBearishOb: ctx.smc.nearestOB(currentPrice, "BEARISH") ?? undefined,
-        nearestBullishFvg: ctx.smc.nearestFVG(currentPrice, "BULLISH") ?? undefined,
-        nearestBearishFvg: ctx.smc.nearestFVG(currentPrice, "BEARISH") ?? undefined,
+    const vetoInput: AIVetoInput = {
+      symbol: ctx.symbol,
+      intent: "ENTRY",
+      side: bias as any,
+      lastPrice: currentPrice,
+      timeframeBias: {
+        htf: bias === "LONG" ? "BULL" : "BEAR",
+        rsi: indicators.rsi14 ?? 50,
+        emaSlope: "FLAT",
+      },
+      volatility: {
+        atr: indicators.atr14 ?? 0,
+        atrPercentile: 50,
+      },
+      indicators: {
+        ema20: indicators.ema20 ?? 0,
+        ema200: indicators.ema200 ?? 0,
+        vwap: indicators.vwap ?? 0,
+      },
+      marketContext: {
+        session: "ASIA",
+        smc: {
+          activeSweep: ctx.smc.activeSweep?.type,
+          activeSweepAgeMinutes: smcMetrics?.ageMinutes,
+          activeSweepVolumeRatio: smcMetrics?.volumeRatio,
+          nearestBullishOb: ctx.smc.nearestOB(currentPrice, "BULLISH") ?? undefined,
+          nearestBearishOb: ctx.smc.nearestOB(currentPrice, "BEARISH") ?? undefined,
+          nearestBullishFvg: ctx.smc.nearestFVG(currentPrice, "BULLISH") ?? undefined,
+          nearestBearishFvg: ctx.smc.nearestFVG(currentPrice, "BEARISH") ?? undefined,
+        }
       }
+    };
+
+    const { allowed, reason } = await aiVeto(aiClient, vetoInput);
+    pushAiAnalysis(ctx.symbol, "ENTRY", allowed, reason);
+
+    if (!allowed) {
+      fsm.setSignalState(SignalState.IDLE);
+      return;
     }
-  };
-
-  const { allowed, reason } = await aiVeto(aiClient, vetoInput);
-  pushAiAnalysis(ctx.symbol, "ENTRY", allowed, reason);
-
-  if (!allowed) {
-    fsm.setSignalState(SignalState.IDLE);
-    return;
+  } else {
+    logger.info(`[ARES.DEV] AI veto skipped for ${ctx.symbol} — dev mode`);
   }
 
   const set = await orderManager.execute({
@@ -574,10 +1216,12 @@ const executeEntry = async (ctx: SymbolContext, bias: string, displacement: any)
     qty,
     stopPrice: stop,
     targetPrice: tp,
+    useMarketEntry: env.PAPER_MARKET_ENTRY,
     signalContext: { htfBias: bias, smcScore: 0.8, rr: RISK_CONFIG.minRR, reason: "Active Displacement" }
   });
 
-  if (set?.entryOrderId) fsm.setSignalState(SignalState.ORDER_PLACED);
+  if (set?.entryOrderId && fsm.canTransitionToSignal(SignalState.ORDER_PLACED))
+    fsm.setSignalState(SignalState.ORDER_PLACED);
 }
 
 const handleOhlcvMessage = (msg: any) => {
@@ -641,6 +1285,133 @@ const handleOhlcvMessage = (msg: any) => {
   });
 }
 
+const checkProfitTargetExit = async (symbol: string, price: number) => {
+  const upperSymbol = symbol.toUpperCase();
+  const pos = activePositions.get(upperSymbol);
+  if (!pos || closingSymbols.has(upperSymbol)) return;
+
+  const contractValue = Number(
+    symbolContexts.get(upperSymbol)?.cachedProduct?.contract_value ?? 1
+  );
+  const leverage = resolveMaxLeverage(upperSymbol);
+  const direction = pos.side === "buy" ? 1 : -1;
+  const pnlUsd = direction * (price - pos.entryPrice) * pos.filledQty * contractValue;
+  const marginUsd = pos.entryPrice * pos.filledQty * contractValue / leverage;
+
+  if (marginUsd <= 0 || (pnlUsd / marginUsd) < RISK_CONFIG.profitTargetPct) return;
+
+  closingSymbols.add(upperSymbol);
+  const pnlPct = ((pnlUsd / marginUsd) * 100).toFixed(1);
+  logger.info(`[ARES.EXECUTION] Profit target ${pnlPct}% hit for ${upperSymbol} — closing position`);
+
+  try {
+    const closeSide = pos.side === "buy" ? "sell" : "buy";
+
+    if (isSimulatedMode() && paper) {
+      // Cancel bracket orders through the paper executor (not REST API)
+      if (pos.slOrderId) paper.cancel(pos.slOrderId);
+      if (pos.tp1OrderId) paper.cancel(pos.tp1OrderId);
+      if (pos.tp2OrderId) paper.cancel(pos.tp2OrderId);
+      if (pos.beSlOrderId) paper.cancel(pos.beSlOrderId);
+
+      // Close via paper executor market order
+      paper.placeOrder({
+        product_symbol: upperSymbol,
+        size: pos.filledQty,
+        side: closeSide,
+        order_type: "market",
+      });
+    } else if (env.TRADING_MODE === "live") {
+      // Cancel all bracket orders on Delta Exchange
+      await Promise.allSettled([
+        pos.slOrderId ? rest.cancelOrder(pos.slOrderId) : Promise.resolve(),
+        pos.tp1OrderId ? rest.cancelOrder(pos.tp1OrderId) : Promise.resolve(),
+        pos.tp2OrderId ? rest.cancelOrder(pos.tp2OrderId) : Promise.resolve(),
+        pos.beSlOrderId ? rest.cancelOrder(pos.beSlOrderId) : Promise.resolve(),
+      ]);
+
+      // Try post-only limit first to save on fees
+      let filled = false;
+      try {
+        const limitOrder = await rest.placeOrder({
+          product_symbol: upperSymbol,
+          side: closeSide,
+          order_type: "limit_order",
+          limit_price: String(price),
+          post_only: true,
+          size: pos.filledQty,
+          reduce_only: true,
+        });
+        const limitOrderId = String(limitOrder?.result?.id ?? "");
+
+        // Wait 5s for limit fill, then fall back to market
+        if (limitOrderId) {
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          try {
+            await rest.cancelOrder(limitOrderId);
+          } catch {
+            // Order already filled or cancelled — that's fine
+            filled = true;
+          }
+        }
+      } catch {
+        // Post-only rejected (would cross) — go straight to market
+      }
+
+      if (!filled) {
+        await rest.placeOrder({
+          product_symbol: upperSymbol,
+          side: closeSide,
+          order_type: "market_order",
+          size: pos.filledQty,
+          reduce_only: true,
+        });
+      }
+    }
+
+    // Record the trade
+    const realizedPnl = pnlUsd;
+    const riskUsdt = Math.abs(pos.entryPrice - pos.slPrice) * pos.entryQty * contractValue;
+    tradeJournal.write({
+      id: uuid(),
+      symbol: pos.symbol,
+      side: pos.side,
+      entryPrice: pos.entryPrice,
+      entryQty: pos.entryQty,
+      entryTime: pos.entryTime,
+      tp1Price: pos.tp1Price,
+      tp1FilledPrice: pos.tp1FillPrice,
+      tp1FilledQty: pos.tp1FillQty,
+      tp1FilledTime: pos.tp1FilledTime,
+      tp2Price: pos.tp2Price,
+      tp2FilledPrice: null,
+      tp2FilledQty: null,
+      tp2FilledTime: null,
+      slPrice: pos.slPrice,
+      slFilledPrice: null,
+      slFilledQty: null,
+      slFilledTime: null,
+      exitReason: "PROFIT_TARGET" as ExitReason,
+      realizedPnl,
+      rMultiple: riskUsdt > 0 ? realizedPnl / riskUsdt : 0,
+      closedTime: Date.now(),
+      signal: pos.signal,
+      entryOrderId: pos.entryOrderId,
+      slOrderId: pos.slOrderId,
+      tp1OrderId: pos.tp1OrderId,
+      tp2OrderId: pos.tp2OrderId,
+    });
+
+    pnl.record(realizedPnl * RISK_CONFIG.USDINR);
+    activePositions.delete(upperSymbol);
+    logger.info(`[ARES.EXECUTION] Profit target exit complete for ${upperSymbol} — PnL: ${realizedPnl.toFixed(4)} USD`);
+  } catch (err) {
+    logger.error(err, `[ARES.EXECUTION] Profit target exit failed for ${upperSymbol}`);
+  } finally {
+    closingSymbols.delete(upperSymbol);
+  }
+};
+
 const handleTickerMessage = (msg: TickerMessage) => {
   const price = tickerPrice(msg);
   if (price == null || !msg.symbol) return;
@@ -651,9 +1422,53 @@ const handleTickerMessage = (msg: TickerMessage) => {
 }
 
 const handleOrderUpdate = (msg: any) => {
+  if (env.TRADING_MODE !== "live") return;
+
+  // Delta WS sends order data inside msg.data or at top level
+  const data = msg.data ?? msg;
+  const orderId = String(data.id ?? data.order_id ?? "");
+  const status = String(data.state ?? data.status ?? "").toLowerCase();
+  const symbol = String(data.product_symbol ?? data.symbol ?? "").toUpperCase();
+  const filledQty = Number(data.filled_qty ?? data.size ?? 0);
+  const avgFillPrice = Number(data.average_fill_price ?? data.fill_price ?? 0);
+
+  if (!orderId) return;
+
+  logger.info(`[ARES.WS] Order update: ${orderId} status=${status} symbol=${symbol} filled=${filledQty}`);
+
+  // Check if this is a bracket fill (SL/TP)
+  if (exitManager.isBracketOrder(orderId) && status === "closed") {
+    void exitManager.onBracketFill(orderId, filledQty, avgFillPrice);
+    return;
+  }
+
+  // Check if this is an entry order fill
+  if (status === "closed" && filledQty > 0) {
+    void orderManager.onLiveEntryFilled(orderId, filledQty, avgFillPrice);
+  } else if (status === "open" && filledQty > 0) {
+    void orderManager.onLiveEntryPartialFill(orderId, filledQty);
+  }
 }
 
 const handlePositionUpdate = (msg: any) => {
+  if (env.TRADING_MODE !== "live") return;
+
+  const data = msg.data ?? msg;
+  const symbol = String(data.product_symbol ?? data.symbol ?? "").toUpperCase();
+  const size = Number(data.size ?? 0);
+
+  if (!symbol) return;
+
+  logger.info(`[ARES.WS] Position update: ${symbol} size=${size}`);
+  if (size === 0) {
+    livePositions.delete(symbol);
+    if (activePositions.has(symbol)) {
+      activePositions.delete(symbol);
+      logger.info(`[ARES.WS] Position ${symbol} is flat; removed from active positions`);
+    }
+  } else {
+    livePositions.set(symbol, data);
+  }
 }
 
 bootstrap().catch((e) => {

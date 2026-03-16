@@ -10,6 +10,7 @@ interface ExitDependencies {
   isDailyLossBreached: () => boolean;
   recordTrade: (pnl: number) => void;
   activateKillSwitch: (reason: string) => void;
+  resolveContractValue: (symbol: string) => number;
 }
 
 export class ExitManager {
@@ -144,10 +145,11 @@ export class ExitManager {
     await this.cancelSafely(pos.slOrderId, "SL after TP1");
     pos.slOrderId = null;
 
+    const cv = this.deps.resolveContractValue(pos.symbol);
     const remainingQty = await this.brackets.fetchRemainingQty(pos.symbol);
     if (remainingQty <= 0) {
       logger.warn(`[ARES.EXECUTION] Remaining qty is zero after TP1 fill for ${pos.symbol}`);
-      const pnl = calculatePnl(pos.side, pos.entryPrice, price, qty);
+      const pnl = calculatePnl(pos.side, pos.entryPrice, price, qty, cv);
       await this.closeOut(pos, "TP2", price, pnl);
       return;
     }
@@ -166,7 +168,7 @@ export class ExitManager {
     }
 
     pos.beSlOrderId = await this.brackets.placeBreakevenSl(pos, remainingQty);
-    const partialPnl = calculatePnl(pos.side, pos.entryPrice, price, qty);
+    const partialPnl = calculatePnl(pos.side, pos.entryPrice, price, qty, cv);
     logger.info(
       `[ARES.EXECUTION] Breakeven SL placed @ ${pos.entryPrice} | Partial PnL:${partialPnl.toFixed(2)} USDT`
     );
@@ -183,7 +185,8 @@ export class ExitManager {
     pos.beSlOrderId = null;
     pos.slOrderId = null;
 
-    const pnl = calculatePnl(pos.side, pos.entryPrice, price, qty);
+    const cv = this.deps.resolveContractValue(pos.symbol);
+    const pnl = calculatePnl(pos.side, pos.entryPrice, price, qty, cv);
     await this.closeOut(pos, "TP2", price, pnl);
   }
 
@@ -203,7 +206,8 @@ export class ExitManager {
     pos.tp2OrderId = null;
     pos.beSlOrderId = null;
 
-    const pnl = calculatePnl(pos.side, pos.entryPrice, price, qty);
+    const cv = this.deps.resolveContractValue(pos.symbol);
+    const pnl = calculatePnl(pos.side, pos.entryPrice, price, qty, cv);
     await this.closeOut(pos, "SL", price, pnl);
 
     if (this.deps.isDailyLossBreached()) {
@@ -221,7 +225,8 @@ export class ExitManager {
     await this.verifyFlat(pos.symbol);
     this.deps.recordTrade(pnl);
 
-    const riskUsdt = (pos.entryPrice - pos.slPrice) * pos.entryQty;
+    const cv = this.deps.resolveContractValue(pos.symbol);
+    const riskUsdt = Math.abs(pos.entryPrice - pos.slPrice) * pos.entryQty * cv;
     const record: TradeRecord = {
       id: uuid(),
       symbol: pos.symbol,

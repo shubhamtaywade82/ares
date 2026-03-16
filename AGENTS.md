@@ -47,4 +47,4 @@ Default provider is `ollama` for local runs; set `AI_PROVIDER=openai` with `OPEN
 Environment variables are required for Delta Exchange access. Use `.env.example` as a template and avoid committing secrets. Key variables include:
 - `DELTA_API_KEY`, `DELTA_API_SECRET`
 - `DELTA_BASE_URL`, `DELTA_WS_URL` (defaults target India production; testnet available)
-- `TRADING_MODE`, `LOG_LEVEL`
+- `TRADING_MODE`, `LOG_LEVEL` — `TRADING_MODE` may be `paper`, `live`, `backtest`, or `dev`; `dev` uses **real market data** from Delta Exchange India (same WebSocket feed as paper) with **simulated execution** and relaxed gates so the full pipeline (entries, positions, brackets, exits, PnL) can be exercised during development.

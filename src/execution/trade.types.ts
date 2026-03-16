@@ -1,4 +1,4 @@
-export type ExitReason = "TP1" | "TP2" | "SL" | "MANUAL" | "KILL_SWITCH";
+export type ExitReason = "TP1" | "TP2" | "SL" | "MANUAL" | "KILL_SWITCH" | "PROFIT_TARGET";
 export type PositionStage = "ENTRY_PENDING" | "OPEN_FULL" | "OPEN_PARTIAL" | "FLAT";
 
 export interface TradeSignalContext {

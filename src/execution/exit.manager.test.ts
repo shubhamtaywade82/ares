@@ -61,7 +61,7 @@ test("TP1: cancels SL, resizes TP2, places BE-SL as stop-limit", async () => {
     new BracketBuilder(rest),
     { write: () => undefined } as unknown as TradeJournal,
     positions,
-    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined }
+    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined, resolveContractValue: () => 1 }
   );
 
   await manager.onBracketFill("tp1-1", 2, 105);
@@ -88,7 +88,7 @@ test("TP2: cancels BE-SL, clears state and writes journal", async () => {
     new BracketBuilder(rest),
     { write: () => void (writes += 1) } as unknown as TradeJournal,
     positions,
-    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined }
+    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined, resolveContractValue: () => 1 }
   );
 
   await manager.onBracketFill("tp2-1", 2, 110);
@@ -112,7 +112,7 @@ test("SL: cancels remaining exits, clears state, checks daily loss and activates
     new BracketBuilder(rest),
     { write: () => undefined } as unknown as TradeJournal,
     positions,
-    { isDailyLossBreached: () => true, recordTrade: () => undefined, activateKillSwitch: () => void (kill += 1) }
+    { isDailyLossBreached: () => true, recordTrade: () => undefined, activateKillSwitch: () => void (kill += 1), resolveContractValue: () => 1 }
   );
 
   await manager.onBracketFill("sl-1", 4, 95);
@@ -134,7 +134,7 @@ test("verifyFlat: keeps state OPEN_FULL if exchange still reports non-zero", asy
     new BracketBuilder(rest),
     { write: () => undefined } as unknown as TradeJournal,
     positions,
-    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined }
+    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined, resolveContractValue: () => 1 }
   );
 
   await manager.onBracketFill("tp2-1", 2, 110);
@@ -152,7 +152,7 @@ test("canReenter: blocked after close and cleared on explicit reset", async () =
     new BracketBuilder(rest),
     { write: () => undefined } as unknown as TradeJournal,
     positions,
-    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined }
+    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined, resolveContractValue: () => 1 }
   );
 
   await manager.onBracketFill("tp2-1", 2, 110);
@@ -174,7 +174,7 @@ test("TP1 with remaining qty = 0 closes as TP2 path", async () => {
     new BracketBuilder(rest),
     { write: () => void (writes += 1) } as unknown as TradeJournal,
     positions,
-    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined }
+    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined, resolveContractValue: () => 1 }
   );
 
   // source-of-truth remaining is zero
@@ -250,7 +250,7 @@ test("boot adopt reconstructs active position from reduce-only brackets", async 
     new BracketBuilder(rest),
     { write: () => undefined } as unknown as TradeJournal,
     positions,
-    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined }
+    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined, resolveContractValue: () => 1 }
   );
 
   await manager.reconcileOnBoot(
@@ -282,6 +282,7 @@ test("boot orphan closes when configured and kills when disabled", async () => {
       isDailyLossBreached: () => false,
       recordTrade: () => undefined,
       activateKillSwitch: () => void (killed += 1),
+      resolveContractValue: () => 1,
     }
   );
 
@@ -321,7 +322,7 @@ test("Concurrent fill for same symbol is ignored while first fill is in progress
     new BracketBuilder(rest),
     { write: () => undefined } as unknown as TradeJournal,
     positions,
-    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined }
+    { isDailyLossBreached: () => false, recordTrade: () => undefined, activateKillSwitch: () => undefined, resolveContractValue: () => 1 }
   );
 
   const first = manager.onBracketFill("tp1-1", 2, 105);
