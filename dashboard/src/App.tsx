@@ -41,6 +41,8 @@ interface Position {
   entryPrice: number;
   markPrice: number;
   size: number;
+  notional: number;
+  notionalUsd: number;
   pnl: number;
   pnlPercent: number;
   tp: number;
@@ -333,67 +335,77 @@ const CurrentTrendStrip = ({ snapshot }: { snapshot: Snapshot }) => {
   );
 };
 
-const PositionTable = ({ positions }: { positions: Position[] }) => (
-  <div className="glass overflow-hidden">
-    <div className="px-6 py-4 border-b border-white/5 flex justify-between items-center bg-white/[0.02]">
-      <h3 className="text-sm font-bold uppercase tracking-widest text-slate-400">Active Positions</h3>
-      <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-500 text-[10px] font-black uppercase tracking-tighter">
-        {positions.length} Positions Open
-      </span>
-    </div>
-    <table className="w-full text-left border-collapse">
-      <thead>
-        <tr className="border-b border-white/5 bg-white/[0.01]">
-          {['Symbol', 'Side', 'Size', 'Entry', 'Mark', 'TP/SL', 'PnL'].map(h => (
-            <th key={h} className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">{h}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        <AnimatePresence>
-          {positions.map((p, i) => (
-            <motion.tr
-              key={p.id}
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 10 }}
-              transition={{ delay: i * 0.05 }}
-              className="border-b border-white/5 hover:bg-white/[0.03] transition-colors"
-            >
-              <td className="px-6 py-4 font-black text-sm">{p.symbol}</td>
-              <td className="px-6 py-4">
-                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${p.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
-                  {p.side}
-                </span>
-              </td>
-              <td className="px-6 py-4 font-mono text-xs text-slate-400">{p.size}</td>
-              <td className="px-6 py-4 font-mono text-xs text-slate-400">${formatRaw(p.entryPrice)}</td>
-              <td className="px-6 py-4 font-mono text-xs text-slate-300 font-bold">
-                <FlashValue value={p.markPrice}>
-                  ${formatRaw(p.markPrice)}
-                </FlashValue>
-              </td>
-              <td className="px-6 py-4">
-                <div className="flex flex-col gap-1">
-                  <span className="text-[10px] text-emerald-500/70 font-mono">TP: ${formatRaw(p.tp)}</span>
-                  <span className="text-[10px] text-rose-500/70 font-mono">SL: ${formatRaw(p.sl)}</span>
-                </div>
-              </td>
-              <td className="px-6 py-4 text-right">
-                <FlashValue value={p.pnl}>
-                  <div className={`flex flex-col items-end gap-0.5 ${p.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                    <span className="font-black text-sm tabular-nums tracking-tighter">₹{formatRaw(p.pnl)}</span>
-                    <span className="text-[10px] font-bold opacity-70">({formatRaw(p.pnlPercent)}%)</span>
+const PositionTable = ({ positions }: { positions: Position[] }) => {
+  const sorted = [...positions].sort((a, b) => b.pnl - a.pnl);
+
+  return (
+    <div className="glass overflow-hidden">
+      <div className="px-6 py-4 border-b border-white/5 flex justify-between items-center bg-white/[0.02]">
+        <h3 className="text-sm font-bold uppercase tracking-widest text-slate-400">Active Positions</h3>
+        <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-500 text-[10px] font-black uppercase tracking-tighter">
+          {positions.length} Positions Open
+        </span>
+      </div>
+      <table className="w-full text-left border-collapse">
+        <thead>
+          <tr className="border-b border-white/5 bg-white/[0.01]">
+            {['Symbol', 'Side', 'Size (Notional)', 'Entry (USD)', 'Mark (USD)', 'TP/SL', 'PnL (INR)'].map(h => (
+              <th key={h} className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-slate-500">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          <AnimatePresence>
+            {sorted.map((p, i) => (
+              <motion.tr
+                key={p.id}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 10 }}
+                transition={{ delay: i * 0.05 }}
+                layout
+                className="border-b border-white/5 hover:bg-white/[0.03] transition-colors"
+              >
+                <td className="px-6 py-4 font-black text-sm">{p.symbol}</td>
+                <td className="px-6 py-4">
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${p.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
+                    {p.side}
+                  </span>
+                </td>
+                <td className="px-6 py-4">
+                  <div className="flex flex-col">
+                    <span className="font-mono text-xs text-slate-300 font-bold">{p.notional.toFixed(3)} {p.symbol.replace('USD', '')}</span>
+                    <span className="text-[10px] text-slate-500">(${p.notionalUsd.toFixed(1)})</span>
                   </div>
-                </FlashValue>
-              </td>
-            </motion.tr>
-          ))}
-        </AnimatePresence>
-      </tbody>
-    </table>
-  </div>
-);
+                </td>
+                <td className="px-6 py-4 font-mono text-xs text-slate-400">${formatRaw(p.entryPrice)}</td>
+                <td className="px-6 py-4 font-mono text-xs text-slate-300 font-bold">
+                  <FlashValue value={p.markPrice}>
+                    ${formatRaw(p.markPrice)}
+                  </FlashValue>
+                </td>
+                <td className="px-6 py-4">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] text-emerald-500/70 font-mono">TP: ${formatRaw(p.tp)}</span>
+                    <span className="text-[10px] text-rose-500/70 font-mono">SL: ${formatRaw(p.sl)}</span>
+                  </div>
+                </td>
+                <td className="px-6 py-4 text-right">
+                  <FlashValue value={p.pnl}>
+                    <div className={`flex flex-col items-end gap-0.5 ${p.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                      <span className="font-black text-sm tabular-nums tracking-tighter">₹{formatRaw(p.pnl)}</span>
+                      <span className="text-[10px] font-bold opacity-70">({formatRaw(p.pnlPercent)}%)</span>
+                    </div>
+                  </FlashValue>
+                </td>
+              </motion.tr>
+            ))}
+          </AnimatePresence>
+        </tbody>
+      </table>
+    </div>
+  );
+};
 
 const TradeHistoryList = ({ history }: { history: TradeHistoryItem[] }) => (
   <div className="glass h-full flex flex-col">
@@ -846,6 +858,8 @@ function App() {
               entryPrice: Number(p.entryPrice ?? 0),
               markPrice: Number(p.markPrice ?? p.entryPrice ?? 0),
               size: Number(p.filledQty ?? p.entryQty ?? p.size ?? 0),
+              notional: Number(p.notional ?? 0),
+              notionalUsd: Number(p.notionalUsd ?? 0),
               pnl: Number(p.pnl ?? 0),
               pnlPercent: Number(p.pnlPercent ?? 0),
               tp: Number(p.tp1Price ?? p.tp ?? p.entryPrice ?? 0),

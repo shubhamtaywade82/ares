@@ -399,11 +399,23 @@ function getDisplayPositions(): Array<ActivePosition & { markPrice: number; pnl:
     );
     const leverage = resolveMaxLeverage(pos.symbol);
     const direction = pos.side === "buy" ? 1 : -1;
-    const pnlUsd = direction * (markPrice - pos.entryPrice) * pos.filledQty * contractValue;
+    
+    const notional = pos.filledQty * contractValue;
+    const notionalUsd = notional * markPrice;
+    
+    const pnlUsd = direction * (markPrice - pos.entryPrice) * notional;
     const positionPnl = pnlUsd * RISK_CONFIG.USDINR;
-    const marginINR = pos.entryPrice * pos.filledQty * contractValue * RISK_CONFIG.USDINR / leverage;
+    const marginINR = (pos.entryPrice * notional * RISK_CONFIG.USDINR) / leverage;
     const pnlPercent = marginINR > 0 ? (positionPnl / marginINR) * 100 : 0;
-    return { ...pos, markPrice, pnl: positionPnl, pnlPercent };
+    
+    return { 
+      ...pos, 
+      markPrice, 
+      pnl: positionPnl, 
+      pnlPercent,
+      notional,
+      notionalUsd
+    };
   });
 
   if (result.length > 0) {
