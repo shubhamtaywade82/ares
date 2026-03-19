@@ -22,7 +22,8 @@ export class ExitManager {
     private brackets: BracketBuilder,
     private journal: TradeJournal,
     private positions: Map<string, ActivePosition>,
-    private deps: ExitDependencies
+    private deps: ExitDependencies,
+    private mode: "live" | "paper" | "dev" | "test_flow" | "backtest" = "live"
   ) {}
 
   async onBracketFill(orderId: string, filledQty: number, fillPrice: number): Promise<void> {
@@ -264,6 +265,9 @@ export class ExitManager {
   }
 
   private async verifyFlat(symbol: string): Promise<void> {
+    // In non-live modes the Delta API has no real positions; skip to avoid spurious API calls.
+    if (this.mode !== "live") return;
+
     const positionsRes = await this.delta.getPositions();
     const positions = Array.isArray(positionsRes?.result) ? positionsRes.result : [];
     const open = positions.find(

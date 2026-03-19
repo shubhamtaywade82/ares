@@ -280,11 +280,13 @@ export class PaperExecutor {
     targetPrice?: number
   ) {
     this.positions.updateBrackets(productId, productSymbol, stopPrice, targetPrice);
+    this.onStateChange?.();
   }
 
   setOrderLeverage(productId: number | undefined, productSymbol: string | undefined, leverage: number) {
     const key = this.leverageKey(productId, productSymbol);
     this.leverages.set(key, leverage);
+    this.onStateChange?.();
     return { leverage, productId, productSymbol };
   }
 
@@ -305,6 +307,7 @@ export class PaperExecutor {
     const key = this.leverageKey(productId, productSymbol);
     if (Number.isFinite(contractValue) && contractValue > 0) {
       this.contractValues.set(key, contractValue);
+      this.onStateChange?.();
     }
     return { contractValue, productId, productSymbol };
   }
@@ -366,6 +369,7 @@ export class PaperExecutor {
       stop_loss_order: { stop_price: stopPrice },
       ...(pos.targetPrice ? { take_profit_order: { limit_price: pos.targetPrice } } : {}),
     });
+    this.onStateChange?.();
   }
 
   closeAllPositions(price?: number) {
@@ -593,18 +597,29 @@ export class PaperExecutor {
     productId?: number,
     productSymbol?: string
   ) {
-    for (const pos of this.positions.all()) {
-      if (!this.matchesPosition(pos, productId, productSymbol)) continue;
-      // Profit target % exit is handled by checkProfitTargetExit in main.ts to avoid double-execution
-      if (pos.stopPrice == null && pos.targetPrice == null) continue;
-      const isLong = pos.side === "LONG";
-      const hitStop = pos.stopPrice != null && (isLong ? price <= pos.stopPrice : price >= pos.stopPrice);
-      const hitTarget =
-        pos.targetPrice != null && (isLong ? price >= pos.targetPrice : price <= pos.targetPrice);
-      if (!hitStop && !hitTarget) continue;
-      this.closePosition(pos.productId, pos.productSymbol, price);
-      break;
+    const symbol = productSymbol?.toUpperCase();
+    for (const order of this.orders.values()) {
+      if (order.status !== "open" || (order.role !== "stop" && order.role !== "take_profit")) continue;
+      if (!this.matchesOrder(order, productId, productSymbol)) continue;
+
+      let triggered = false;
+      if (order.role === "stop") {
+        triggered = (order.side === "buy" && price >= order.stopPrice!) ||
+                    (order.side === "sell" && price <= order.stopPrice!);
+      } else if (order.role === "take_profit") {
+        triggered = (order.side === "buy" && price <= order.price!) ||
+                    (order.side === "sell" && price >= order.price!);
+      }
+
+      if (triggered) {
+        this.fillOrder(order, price, order.role === "take_profit");
+        // We return after one fill to avoid concurrent fills in the same tick 
+        // (OrderManager will handle resizing/replacement in the next tick via onOrderUpdate)
+        return;
+      }
     }
+
+    // Still check profit target % exit in main.ts (via checkProfitTargetExit)
   }
 
   private cancelBracketOrders(productId?: number, productSymbol?: string) {

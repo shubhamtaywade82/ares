@@ -210,24 +210,74 @@ export class OrderManager {
     }
   }
 
-  onPaperOrderUpdate(orderId: string, status: string) {
+  async onPaperOrderUpdate(orderId: string, status: string) {
     if ((this.mode !== "paper" && this.mode !== "dev" && this.mode !== "test_flow") || status !== "closed") return;
 
-    // If this is an SL/TP fill, record trade, then remove the position so dashboard updates
     if (this.activePositions) {
       for (const [symbol, pos] of this.activePositions) {
-        if (pos.slOrderId === orderId) {
-          this.onPaperBracketClosed?.(pos, "SL", pos.slPrice);
+        // SL (Stop-Market or BE-SL) Fill
+        if (pos.slOrderId === orderId || pos.beSlOrderId === orderId) {
+          const reason: ExitReason = "SL"; // BE-SL is semantically a stop-loss exit (at breakeven)
+          this.onPaperBracketClosed?.(pos, reason, pos.slPrice);
           this.activePositions.delete(symbol);
-          logger.info(`[ARES.PAPER] Position ${symbol} closed (SL); removed from active positions`);
+          logger.info(`[ARES.PAPER] Position ${symbol} closed (${pos.beSlOrderId === orderId ? "BE-SL" : "SL"}); removed from active positions`);
           return;
         }
+
+        // TP1 Fill
         if (pos.tp1OrderId === orderId) {
-          this.onPaperBracketClosed?.(pos, "TP1", pos.tp1Price);
-          this.activePositions.delete(symbol);
-          logger.info(`[ARES.PAPER] Position ${symbol} closed (TP1); removed from active positions`);
+          logger.info(`[ARES.PAPER] TP1 filled for ${symbol} — moving to breakeven`);
+          
+          pos.tp1FillPrice = pos.tp1Price;
+          pos.tp1FillQty = pos.entryQty / 2; // TP1 is half size
+          pos.tp1FilledTime = Date.now();
+          pos.tp1OrderId = null;
+          pos.stage = "OPEN_PARTIAL";
+
+          if (this.paper) {
+            // Cancel current SL and replace with BE-SL at entry price
+            if (pos.slOrderId) {
+              this.paper.cancel(pos.slOrderId);
+              pos.slOrderId = null; // ← null immediately so stale ID can't ghost-match future updates
+            }
+
+            const remainingQty = pos.entryQty - pos.tp1FillQty;
+            
+            const beSl = this.paper.placeStopMarket(
+              pos.side === "buy" ? "sell" : "buy",
+              pos.entryPrice,
+              remainingQty,
+              {
+                productSymbol: symbol,
+                clientOrderId: `${pos.entryOrderId}-BE-SL`,
+                role: "stop",
+              }
+            );
+            pos.beSlOrderId = beSl.id;
+            pos.slPrice = pos.entryPrice; // SL is now at entry (breakeven)
+
+            // Resize TP2 order to remaining quantity
+            if (pos.tp2OrderId) {
+              this.paper.cancel(pos.tp2OrderId);
+              const tp2 = this.paper.placeLimit(
+                pos.side === "buy" ? "sell" : "buy",
+                pos.tp2Price,
+                remainingQty,
+                {
+                  productSymbol: symbol,
+                  clientOrderId: `${pos.entryOrderId}-TP2-RESIZED`,
+                  role: "take_profit",
+                }
+              );
+              pos.tp2OrderId = tp2.id;
+            }
+
+            this.paper.setPositionBrackets(undefined, symbol, pos.slPrice, pos.tp2Price);
+          }
           return;
         }
+
+        // TP2 (Full/Remaining) Fill
         if (pos.tp2OrderId === orderId) {
           this.onPaperBracketClosed?.(pos, "TP2", pos.tp2Price);
           this.activePositions.delete(symbol);
@@ -243,23 +293,35 @@ export class OrderManager {
     const set = this.store.get(pending.clientOrderId);
     if (!set) return;
 
+    // Entry Filled — place TP1 and TP2 brackets (50/50 split)
+    const tpDelta = Math.abs(pending.targetPrice - pending.entryPrice);
+    const tp2Price = pending.side === "LONG" ? pending.entryPrice + tpDelta * 2 : pending.entryPrice - tpDelta * 2;
+    const halfQty = pending.qty / 2;
+
     const stop = this.paper.placeStopMarket(pending.side === "LONG" ? "sell" : "buy", pending.stopPrice, pending.qty, {
       productSymbol: pending.symbol,
       clientOrderId: `${pending.clientOrderId}-SL`,
       role: "stop",
     });
-    const tp = this.paper.placeLimit(pending.side === "LONG" ? "sell" : "buy", pending.targetPrice, pending.qty, {
+    
+    const tp1 = this.paper.placeLimit(pending.side === "LONG" ? "sell" : "buy", pending.targetPrice, halfQty, {
       productSymbol: pending.symbol,
-      clientOrderId: `${pending.clientOrderId}-TP`,
+      clientOrderId: `${pending.clientOrderId}-TP1`,
+      role: "take_profit",
+    });
+
+    const tp2 = this.paper.placeLimit(pending.side === "LONG" ? "sell" : "buy", tp2Price, halfQty, {
+      productSymbol: pending.symbol,
+      clientOrderId: `${pending.clientOrderId}-TP2`,
       role: "take_profit",
     });
 
     set.stopOrderId = stop.id;
-    set.targetOrderId = tp.id;
+    set.targetOrderId = tp2.id;
     this.pendingPaperBrackets.delete(orderId);
-    logger.info("[ARES.PAPER] Bracket orders submitted");
+    logger.info("[ARES.PAPER] Bracket orders (SL, TP1, TP2) submitted");
 
-    // So dashboard shows active positions in paper/dev: add to activePositions (same shape as live)
+    // Add to activePositions for dashboard and state tracking
     if (this.activePositions) {
       const symbolKey = pending.symbol.toUpperCase();
       const side = pending.side === "LONG" ? "buy" : "sell";
@@ -274,10 +336,10 @@ export class OrderManager {
         stage: "OPEN_FULL",
         slPrice: pending.stopPrice,
         tp1Price: pending.targetPrice,
-        tp2Price: pending.targetPrice,
+        tp2Price: tp2Price,
         slOrderId: stop.id,
-        tp1OrderId: null,
-        tp2OrderId: tp.id,
+        tp1OrderId: tp1.id,
+        tp2OrderId: tp2.id,
         beSlOrderId: null,
         tp1FillPrice: null,
         tp1FillQty: null,
@@ -292,6 +354,6 @@ export class OrderManager {
       });
     }
 
-    this.paper.setPositionBrackets(undefined, pending.symbol, pending.stopPrice, pending.targetPrice);
+    this.paper.setPositionBrackets(undefined, pending.symbol, pending.stopPrice, tp2Price);
   }
 }

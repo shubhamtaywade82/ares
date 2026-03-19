@@ -163,7 +163,7 @@ const exitManager = new ExitManager(rest, bracketBuilder, tradeJournal, activePo
   resolveContractValue: (symbol: string) => {
     return Number(symbolContexts.get(symbol.toUpperCase())?.cachedProduct?.contract_value ?? 1);
   },
-});
+}, env.TRADING_MODE);
 
 const symbolContexts = new Map<string, SymbolContext>();
 const livePositions = new Map<string, any>();
@@ -957,6 +957,43 @@ const bootstrap = async () => {
       logger.info(`[ARES.BOOT] Live reconciliation complete: ${openPositions.length} positions, ${openOrders.length} orders`);
     } catch (err) {
       logger.error(err, "[ARES.BOOT] Live reconciliation failed");
+    }
+  }
+
+  // Paper mode: reconcile existing positions into activePositions map
+  if (isSimulatedMode()) {
+    for (const pos of positions.all()) {
+      const sym = (pos.productSymbol ?? "").toUpperCase();
+      if (!sym) continue;
+      const side = pos.side === "LONG" ? "buy" : "sell";
+      activePositions.set(sym, {
+        entryOrderId: "restored",
+        symbol: sym,
+        side,
+        entryPrice: pos.entryPrice,
+        entryQty: pos.qty,
+        filledQty: pos.qty,
+        entryTime: Date.now(),
+        stage: "OPEN_FULL",
+        slPrice: pos.stopPrice ?? 0,
+        tp1Price: pos.targetPrice ?? 0,
+        tp2Price: pos.targetPrice ?? 0,
+        slOrderId: null,
+        tp1OrderId: null,
+        tp2OrderId: null,
+        beSlOrderId: null,
+        tp1FillPrice: null,
+        tp1FillQty: null,
+        tp1FilledTime: null,
+        tp2FillPrice: null,
+        tp2FillQty: null,
+        tp2FilledTime: null,
+        slFillPrice: null,
+        slFillQty: null,
+        slFilledTime: null,
+        signal: { htfBias: "UNKNOWN", smcScore: 0, rr: 0, reason: "restored" },
+      });
+      logger.info(`[ARES.BOOT] Restored paper active position: ${sym} SL:${pos.stopPrice ?? 0} TP:${pos.targetPrice ?? 0}`);
     }
   }
 
