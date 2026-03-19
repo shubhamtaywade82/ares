@@ -9,6 +9,8 @@ export interface ExecutionRequest {
   targetPrice: number;
   qty: number;
   useMarketEntry?: boolean;
+  /** Current best bid (for BUY) or best ask (for SELL) at signal time. Used by slippage guard. */
+  bestMarketPrice?: number;
   signalContext?: {
     htfBias: string;
     smcScore: number;

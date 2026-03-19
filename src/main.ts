@@ -679,6 +679,13 @@ const stateServer = http.createServer(async (req, res) => {
     return;
   }
 
+
+  if (req.method === "GET" && req.url === "/api/stats") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(tradeJournal.analyzeTrades()));
+    return;
+  }
+
   res.writeHead(404);
   res.end();
 });
@@ -829,9 +836,6 @@ const bootstrap = async () => {
 
   const ws = new DeltaWsClient(
     (msg: any) => {
-      if (process.env.LOG_LEVEL === "debug") {
-        console.log(`[ARES.WS.MSG] type=${msg?.type} symbol=${msg?.symbol}`);
-      }
       if (msg?.type === "v2/ticker" || msg?.type === "ticker") {
         handleTickerMessage(msg);
         const price = tickerPrice(msg);
@@ -1229,7 +1233,6 @@ const handleOhlcvMessage = (msg: any) => {
   if (!ctx) return;
 
   const resolution = msg.resolution ?? msg.type.split("_")[1];
-  if (process.env.LOG_LEVEL === "debug") console.log(`[ARES.MARKET] Received OHLCV for ${msg.symbol} ${resolution}`);
 
   const candleData = msg.candle ?? msg;
   
@@ -1415,7 +1418,6 @@ const checkProfitTargetExit = async (symbol: string, price: number) => {
 const handleTickerMessage = (msg: TickerMessage) => {
   const price = tickerPrice(msg);
   if (price == null || !msg.symbol) return;
-  if (process.env.LOG_LEVEL === "debug") console.log(`[ARES.MARKET] Received Ticker for ${msg.symbol}: ${price}`);
   watchlistLtps.set(msg.symbol, price);
   const ctx = symbolContexts.get(msg.symbol);
   if (ctx) ctx.market.ingestTick(price, 0, Date.now());

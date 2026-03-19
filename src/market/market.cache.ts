@@ -33,7 +33,6 @@ export class MarketCache {
     }));
 
     builder.bootstrap(normalized);
-    logger.info(`[ARES.MARKET] Cached ${normalized.length} candles for ${tf}`);
   }
 
   ingestTick(price: number, volume: number, timestamp: number) {

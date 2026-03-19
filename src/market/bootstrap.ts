@@ -21,19 +21,12 @@ export const bootstrapMarket = async (
     try {
       const start = end - lookbackSeconds;
       const startedAt = Date.now();
-      logger.info(
-        `[ARES.MARKET] Bootstrapping ${tf} from ${start} to ${end} (limit 200)...`
-      );
       const result = await rest.getCandles(symbol, tf, start, end, 200, {
         timeoutMs: 30_000,
         retries: 3,
         retryBaseDelayMs: 1000,
         retryMaxDelayMs: 8000,
       });
-      const elapsedMs = Date.now() - startedAt;
-      console.info(
-        `[ARES.MARKET] Bootstrap ${tf} succeeded (${result.result.length} candles in ${elapsedMs}ms)`
-      );
       cache.bootstrap(tf, result.result);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);

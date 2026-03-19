@@ -99,6 +99,20 @@ export class OrderManager {
     }
 
     logger.info(`[ARES.EXECUTION] Submitting entry order ${req.symbol} ${req.side} qty=${req.qty}`);
+
+    // Slippage guard: abort if market has already moved too far from our signal price.
+    // bestAskBid is passed in the request when available; otherwise we skip the guard.
+    if (req.bestMarketPrice != null && req.entryPrice > 0) {
+      const slippagePct = Math.abs(req.bestMarketPrice - req.entryPrice) / req.entryPrice * 100;
+      const MAX_SLIPPAGE_PCT = 0.1;
+      if (slippagePct > MAX_SLIPPAGE_PCT) {
+        logger.warn(
+          `[ARES.EXECUTION] Slippage guard triggered for ${req.symbol}: slippage=${slippagePct.toFixed(3)}% > ${MAX_SLIPPAGE_PCT}%`
+        );
+        return set;
+      }
+    }
+
     try {
       const entry = await this.rest.placeOrder({
         product_symbol: req.symbol,
