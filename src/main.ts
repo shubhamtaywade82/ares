@@ -978,6 +978,16 @@ const bootstrap = async () => {
       const sym = (pos.productSymbol ?? "").toUpperCase();
       if (!sym) continue;
       const side = pos.side === "LONG" ? "buy" : "sell";
+
+      // Self-healing: if SL/TP are missing or 0, derive defaults so position isn't "stuck"
+      if (!pos.stopPrice || !pos.targetPrice) {
+        const isLong = pos.side === "LONG";
+        // Default 1% SL, 1.5% TP if missing
+        pos.stopPrice = pos.stopPrice || (isLong ? pos.entryPrice * 0.99 : pos.entryPrice * 1.01);
+        pos.targetPrice = pos.targetPrice || (isLong ? pos.entryPrice * 1.015 : pos.entryPrice * 0.985);
+        logger.warn(`[ARES.BOOT] Repaired missing brackets for ${sym}: SL=${pos.stopPrice.toFixed(2)} TP=${pos.targetPrice.toFixed(2)}`);
+      }
+
       activePositions.set(sym, {
         entryOrderId: "restored",
         symbol: sym,
@@ -987,12 +997,12 @@ const bootstrap = async () => {
         filledQty: pos.qty,
         entryTime: Date.now(),
         stage: "OPEN_FULL",
-        slPrice: pos.stopPrice ?? 0,
-        tp1Price: pos.targetPrice ?? 0,
-        tp2Price: pos.targetPrice ?? 0,
-        slOrderId: null,
+        slPrice: pos.stopPrice,
+        tp1Price: pos.targetPrice,
+        tp2Price: pos.targetPrice,
+        slOrderId: `restored-sl-${sym}`,
         tp1OrderId: null,
-        tp2OrderId: null,
+        tp2OrderId: `restored-tp-${sym}`,
         beSlOrderId: null,
         tp1FillPrice: null,
         tp1FillQty: null,
@@ -1005,8 +1015,27 @@ const bootstrap = async () => {
         slFilledTime: null,
         signal: { htfBias: "UNKNOWN", smcScore: 0, rr: 0, reason: "restored" },
       });
-      logger.info(`[ARES.BOOT] Restored paper active position: ${sym} SL:${pos.stopPrice ?? 0} TP:${pos.targetPrice ?? 0}`);
+
+      // Ensure paper executor has these brackets for price-hit detection
+      if (paper) {
+        paper.setPositionBrackets(pos.productId, sym, pos.stopPrice, pos.targetPrice);
+        // Also recreate the simulated orders in the engine so they can be "hit"
+        paper.placeStopMarket(side === "buy" ? "sell" : "buy", pos.stopPrice, pos.qty, {
+          productSymbol: sym,
+          clientOrderId: `restored-sl-${sym}`,
+          role: "stop",
+        });
+        paper.placeLimit(side === "buy" ? "sell" : "buy", pos.targetPrice, pos.qty, {
+          productSymbol: sym,
+          clientOrderId: `restored-tp-${sym}`,
+          role: "take_profit",
+        });
+      }
+      
+      logger.info(`[ARES.BOOT] Restored paper active position: ${sym} SL:${pos.stopPrice.toFixed(2)} TP:${pos.targetPrice.toFixed(2)}`);
     }
+    // Save the repaired state
+    void persistState();
   }
 
   logger.info("[ARES.BOOT] System ready; transitioning to RUNNING");
@@ -1039,7 +1068,7 @@ const scanSymbolInner = async (ctx: SymbolContext) => {
   const riskCtx = await getRiskContext(ctx.symbol);
   
   // Daily Loss Check (percentage based) — skipped in dev so we can exercise full pipeline
-  if (!isDevMode() && riskCtx.dailyPnl <= -(riskCtx.equity * RISK_CONFIG.maxDailyLossPct)) {
+  if (!isDevMode() && riskCtx.dailyPnl < 0 && riskCtx.dailyPnl <= -(riskCtx.equity * RISK_CONFIG.maxDailyLossPct)) {
     KillSwitch.trigger(KillReason.MAX_DAILY_LOSS, { pnl: riskCtx.dailyPnl });
     return;
   }

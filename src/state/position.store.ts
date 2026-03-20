@@ -14,8 +14,8 @@ export class PositionStore {
   private positions = new Map<string, Position>();
 
   private keyFor(productId?: number, productSymbol?: string): string {
-    if (productId != null) return `id:${productId}`;
     if (productSymbol) return `sym:${productSymbol.toUpperCase()}`;
+    if (productId != null) return `id:${productId}`;
     return PositionStore.defaultKey;
   }
 
